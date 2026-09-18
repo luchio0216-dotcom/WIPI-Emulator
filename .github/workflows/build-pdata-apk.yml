@@ -1,4 +1,4 @@
-name: Build P-data Android APK V2
+name: Build P-data Android APK V3
 
 on:
   push:
@@ -64,12 +64,12 @@ jobs:
       - name: Rename APK
         shell: bash
         run: |
-          cp android/app/build/outputs/apk/debug/app-debug.apk WIPI-Emulator-PData-V2-arm64.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk WIPI-Emulator-PData-V3-arm64.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: WIPI-Emulator-PData-V2-arm64
-          path: WIPI-Emulator-PData-V2-arm64.apk
+          name: WIPI-Emulator-PData-V3-arm64
+          path: WIPI-Emulator-PData-V3-arm64.apk
           if-no-files-found: error
           retention-days: 30
