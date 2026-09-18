@@ -13,20 +13,19 @@ val keystoreProps = Properties().apply {
 }
 
 android {
-    // 2026-07-21 wie 명칭 제거: namespace/JNI 심볼도 com.parkjeongseop.wipi로 통일
+    // JNI 심볼은 기존 package/namespace를 유지하고 applicationId만 분리해
+    // Play Store판과 P지원판을 동시에 설치할 수 있게 한다.
     namespace = "com.parkjeongseop.wipi"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.parkjeongseop.wipi"
+        applicationId = "com.parkjeongseop.wipi.pdata"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3  // 매 업로드 증가 필요
-        versionName = "0.2.0"
-        // AAB는 ABI별로 자동 분할되므로 실기기(arm64-v8a) 슬라이스만 배포됨.
-        // x86_64는 에뮬레이터용이라 Play 배포 AAB엔 불필요하지만, 둘 다 넣어도 무방(APK로 뽑을 때 편함).
+        versionCode = 1003
+        versionName = "0.2.0-pdata1"
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            abiFilters += listOf("arm64-v8a")
         }
     }
 
@@ -56,8 +55,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = true       // R8: 코드 축소·난독화
-            isShrinkResources = true     // 미사용 리소스 제거 (material-icons-extended로 커진 크기 대응)
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -65,14 +64,14 @@ android {
             signingConfig = if (keystorePropsFile.exists()) {
                 signingConfigs.getByName("release")
             } else {
-                signingConfigs.getByName("debug") // keystore 없으면 로컬 확인용 debug 서명
+                signingConfigs.getByName("debug")
             }
         }
     }
 
     buildFeatures {
         compose = true
-        buildConfig = true // 설정 화면의 버전 표시용
+        buildConfig = true
     }
 }
 
@@ -82,6 +81,6 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended") // SF Symbols 대응 아이콘 (이모지 대체)
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
 }
