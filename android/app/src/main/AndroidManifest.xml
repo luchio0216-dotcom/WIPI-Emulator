@@ -4,7 +4,7 @@
     <uses-permission android:name="android.permission.VIBRATE" />
 
     <application
-        android:label="WIPI 에뮬 P지원"
+        android:label="WIPI 에뮬 P지원 V2"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="true"
         android:supportsRtl="true"
