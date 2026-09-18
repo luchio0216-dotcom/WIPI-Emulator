@@ -14,16 +14,16 @@ val keystoreProps = Properties().apply {
 
 android {
     // JNI 심볼은 기존 package/namespace를 유지하고 applicationId만 분리해
-    // Play Store판/1차 P지원판과 V2를 동시에 설치할 수 있게 한다.
+    // Play Store판/이전 P지원판과 V3를 동시에 설치할 수 있게 한다.
     namespace = "com.parkjeongseop.wipi"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.parkjeongseop.wipi.pdata2"
+        applicationId = "com.parkjeongseop.wipi.pdata3"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2001
-        versionName = "0.2.0-pdata2"
+        versionCode = 3001
+        versionName = "0.2.0-pdata3"
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
