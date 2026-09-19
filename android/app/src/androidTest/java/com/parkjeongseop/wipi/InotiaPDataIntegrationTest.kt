@@ -1,7 +1,6 @@
 package com.parkjeongseop.wipi
 
 import android.graphics.Bitmap
-import android.net.Uri
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertTrue
@@ -24,8 +23,6 @@ class InotiaPDataIntegrationTest {
         WipiNative.init(context)
 
         val fullZip = testContext.assets.open("inotia1_flat.zip").use { it.readBytes() }
-        val sourceZip = File(context.cacheDir, "inotia1_full.zip").apply { writeBytes(fullZip) }
-
         val gameRoot = File(context.filesDir, "games/inotia-autotest").apply {
             deleteRecursively()
             mkdirs()
@@ -41,21 +38,21 @@ class InotiaPDataIntegrationTest {
         )
 
         val importer = PDataImporter(context)
-        val sourceUri = Uri.fromFile(sourceZip)
+        val sourceZip = File(context.cacheDir, "inotia1_full.zip").apply { writeBytes(fullZip) }
+        val sourceUri = android.net.Uri.fromFile(sourceZip)
         val stage1 = importer.prepareFirstStage(entry, sourceUri).getOrThrow()
         assertTrue(stage1.removedPFiles > 0)
 
-        // Reproduce the legacy first boot with P/ absent and stop at the 600KB prompt.
-        assertTrue(WipiNative.nativeStart(entry.gameFile.readBytes(), entry.filename, entry.dataDir.absolutePath, ""))
-        waitAndPump(7000)
-        pressOk()
-        val before = captureAfterDelay(8000)
-        saveFrame(context.cacheDir, "inotia-before.png", before)
-        val beforeError = pendingError()
+        // #14 showed that one OK only reaches the Inotia title screen, so the
+        // previous pixel comparison was not actually observing the 600KB dialog.
+        // From now on every boot deliberately passes splash -> title -> next screen
+        // with TWO OK presses before taking the comparison frame.
+        val before = bootToPrompt(entry)
+        saveFrame(context.cacheDir, "inotia-before.png", before.frame)
         val treeBefore = summarizeDataTree(entry.dataDir)
 
-        // First attempt in this run: restore the original package and overwrite the
-        // first-boot prefs record with the shipped P/prefs bytes (#13 semantics).
+        // Attempt A: restore the full original package and overwrite the runtime's
+        // first-boot prefs with the shipped P/prefs bytes.
         val shippedPrefs = findPFile(fullZip, "prefs") ?: error("P/prefs not found")
         assertTrue("Expected 64-byte shipped prefs", shippedPrefs.size == 64)
         entry.gameFile.writeBytes(fullZip)
@@ -71,56 +68,54 @@ class InotiaPDataIntegrationTest {
 
         WipiNative.nativeStop()
         Thread.sleep(1000)
+        val attemptA = bootToPrompt(entry)
+        saveFrame(context.cacheDir, "inotia-after-restart.png", attemptA.frame)
+        val aPopupDiff = diffRatio(before.frame, attemptA.frame, 35, 55, 205, 220)
+        val aFullDiff = diffRatio(before.frame, attemptA.frame, 0, 0, width, height)
 
-        assertTrue(WipiNative.nativeStart(entry.gameFile.readBytes(), entry.filename, entry.dataDir.absolutePath, ""))
-        waitAndPump(7000)
-        pressOk()
-        val afterRestart = captureAfterDelay(8000)
-        saveFrame(context.cacheDir, "inotia-after-restart.png", afterRestart)
-        val restartError = pendingError()
-        val popupRegionDiff = diffRatio(before, afterRestart, 35, 55, 205, 230)
-        val fullDiff = diffRatio(before, afterRestart, 0, 0, width, height)
-
-        // Automatic chained fallback: if the first attempt is still pixel-identical
-        // to the 600KB prompt, immediately try the next distinct hypothesis in the
-        // SAME virtual-device run instead of waiting for another scheduled check.
-        // The old handset instructions literally copied the P directory back. Our
-        // prior importer wrote P contents at fs/<AID>/<name>, which would be wrong
-        // if the Clet opens "P/<name>" through the WIPI file API. Mirror every P
-        // payload to both fs/<AID>/P/<name> and fs/<AID>/<name>, then restart again.
+        // Attempt B in the SAME emulator run: if A still matches the real 600KB
+        // dialog, mirror all six shipped P payloads under the literal P/ prefix in
+        // persistent WIPI FS and reboot immediately.
         var chainedFallback = false
         var prefixedPFiles = 0
         var prefixedPBytes = 0L
-        var finalFrame = afterRestart
-        var finalError = restartError
+        var finalProbe = attemptA
 
-        if (popupRegionDiff <= 0.01 && fullDiff <= 0.01) {
+        if (aPopupDiff <= 0.01 && aFullDiff <= 0.01) {
             chainedFallback = true
             WipiNative.nativeStop()
             Thread.sleep(500)
-
             val copied = copyAllPToPersistentFs(entry, fullZip, stage1.aid)
             prefixedPFiles = copied.files
             prefixedPBytes = copied.bytes
             assertTrue("Expected all six P payloads", prefixedPFiles == 6)
-
-            assertTrue(WipiNative.nativeStart(entry.gameFile.readBytes(), entry.filename, entry.dataDir.absolutePath, ""))
-            waitAndPump(7000)
-            pressOk()
-            finalFrame = captureAfterDelay(8000)
-            finalError = pendingError()
+            finalProbe = bootToPrompt(entry)
         }
 
-        saveFrame(context.cacheDir, "inotia-after-ok.png", finalFrame)
-        val finalPopupDiff = diffRatio(before, finalFrame, 35, 55, 205, 230)
-        val finalFullDiff = diffRatio(before, finalFrame, 0, 0, width, height)
+        val finalPopupDiff = diffRatio(before.frame, finalProbe.frame, 35, 55, 205, 220)
+        val finalFullDiff = diffRatio(before.frame, finalProbe.frame, 0, 0, width, height)
+
+        // Only if the frame is no longer the baseline download prompt do we press
+        // OK once more to prove that the game can advance rather than merely show
+        // a cosmetically different dialog.
+        var verificationPressed = false
+        var verificationFrame = finalProbe.frame
+        var verificationError = finalProbe.error
+        if (finalPopupDiff > 0.01 || finalFullDiff > 0.01) {
+            verificationPressed = true
+            pressOk()
+            verificationFrame = captureAfterDelay(5000)
+            verificationError = pendingError()
+        }
+        saveFrame(context.cacheDir, "inotia-after-ok.png", verificationFrame)
+
         val treeFinal = summarizeDataTree(entry.dataDir)
         val prefsFinal = persistentPrefs.takeIf { it.isFile }?.readBytes()
 
         File(context.cacheDir, "inotia-stage2.txt").writeText(
             "aid=${stage1.aid}\n" +
                 "pid=${stage1.pid}\n" +
-                "mode=package+shipped-prefs-then-auto-P-prefix-fallback\n" +
+                "mode=two-ok-real-prompt+package-prefs+auto-P-prefix-fallback\n" +
                 "restoredPackageBytes=${fullZip.size}\n" +
                 "shippedPrefsBytes=${shippedPrefs.size}\n" +
                 "oldPrefsBytes=${oldPrefs?.size ?: -1}\n" +
@@ -133,18 +128,32 @@ class InotiaPDataIntegrationTest {
         )
 
         File(context.cacheDir, "inotia-report.txt").writeText(
-            "beforeError=${beforeError ?: "none"}\n" +
-                "restartError=${restartError ?: "none"}\n" +
-                "finalError=${finalError ?: "none"}\n" +
-                "firstPopupRegionDiff=$popupRegionDiff\n" +
-                "firstFullFrameDiff=$fullDiff\n" +
+            "beforeError=${before.error ?: "none"}\n" +
+                "attemptAError=${attemptA.error ?: "none"}\n" +
+                "finalProbeError=${finalProbe.error ?: "none"}\n" +
+                "verificationError=${verificationError ?: "none"}\n" +
+                "attemptAPopupRegionDiff=$aPopupDiff\n" +
+                "attemptAFullFrameDiff=$aFullDiff\n" +
                 "finalPopupRegionDiff=$finalPopupDiff\n" +
                 "finalFullFrameDiff=$finalFullDiff\n" +
+                "verificationPressed=$verificationPressed\n" +
                 "prefsFinalBytes=${prefsFinal?.size ?: -1}\n" +
                 "prefsFinalEqualShipped=${prefsFinal?.contentEquals(shippedPrefs) ?: false}\n"
         )
 
         WipiNative.nativeStop()
+    }
+
+    private data class Probe(val frame: IntArray, val error: String?)
+
+    private fun bootToPrompt(entry: GameEntry): Probe {
+        assertTrue(WipiNative.nativeStart(entry.gameFile.readBytes(), entry.filename, entry.dataDir.absolutePath, ""))
+        waitAndPump(7000)
+        pressOk() // splash -> title
+        waitAndPump(3000)
+        pressOk() // title -> download check / next game state
+        val frame = captureAfterDelay(5000)
+        return Probe(frame, pendingError())
     }
 
     private data class CopyResult(val files: Int, val bytes: Long)
