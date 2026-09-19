@@ -29,7 +29,7 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Download public Inotia package and flatten ZIP root
+      - name: Prepare working WIPI-root-modified Inotia package
         shell: bash
         run: |
           set -euo pipefail
@@ -52,7 +52,6 @@ jobs:
           if not urls:
               raise SystemExit('Could not locate the public Inotia ZIP attachment URL')
           url = urls[0]
-          print('attachment:', url.split('?')[0])
           subprocess.run(['curl','-fL','--retry','3','-A','Mozilla/5.0','-e','https://dubigame.tistory.com/135',url,'-o','/tmp/inotia/original.zip'], check=True)
           src = zipfile.ZipFile('/tmp/inotia/original.zip')
           names = [n.replace('\\','/') for n in src.namelist()]
@@ -64,13 +63,10 @@ jobs:
           with zipfile.ZipFile(out_path, 'w', zipfile.ZIP_DEFLATED) as out:
               for info in src.infolist():
                   n = info.filename.replace('\\','/')
-                  if info.is_dir() or not n.startswith(prefix):
-                      continue
+                  if info.is_dir() or not n.startswith(prefix): continue
                   rel = n[len(prefix):]
-                  if rel:
-                      out.writestr(rel, src.read(info))
-          digest = hashlib.sha256(out_path.read_bytes()).hexdigest()
-          print('created', out_path, out_path.stat().st_size, 'bytes sha256=', digest)
+                  if rel: out.writestr(rel, src.read(info))
+          print('working WIPI root:', out_path, out_path.stat().st_size, hashlib.sha256(out_path.read_bytes()).hexdigest())
           PY
 
       - name: Install Android NDK and Rust x86_64 target
@@ -89,14 +85,10 @@ jobs:
           export CC_x86_64_linux_android="$TOOLCHAIN/bin/x86_64-linux-android26-clang"
           export AR_x86_64_linux_android="$TOOLCHAIN/bin/llvm-ar"
           export CFLAGS_x86_64_linux_android="-D__ANDROID_API__=26"
-          cd rust
-          cargo fetch
-          cd ..
+          cd rust; cargo fetch; cd ..
           python3 scripts/patch-inotia-min.py
           python3 scripts/patch-inotia-storage-probe.py
-          cd rust
-          cargo build -p wipi_android --release --target x86_64-linux-android
-          cd ..
+          cd rust; cargo build -p wipi_android --release --target x86_64-linux-android; cd ..
           mkdir -p android/app/src/main/jniLibs/x86_64
           cp rust/target/x86_64-linux-android/release/libwipi_android.so android/app/src/main/jniLibs/x86_64/
 
@@ -116,7 +108,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
-          script: set -e; gradle -p android :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace; APP_APK=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -n1); TEST_APK=$(find android/app/build/outputs/apk/androidTest/debug -name '*.apk' | head -n1); adb install -r "$APP_APK"; adb install -r "$TEST_APK"; set +e; adb shell am instrument -w -r -e class com.parkjeongseop.wipi.InotiaPDataIntegrationTest com.parkjeongseop.wipi.pdata4.test/androidx.test.runner.AndroidJUnitRunner > /tmp/inotia-instrumentation.txt 2>&1; TEST_RC=$?; if grep -qE 'FAILURES!!!|INSTRUMENTATION_CODE.*-1|No emulator frame was produced' /tmp/inotia-instrumentation.txt; then TEST_RC=1; fi; cat /tmp/inotia-instrumentation.txt; set -e; mkdir -p inotia-virtual-result; PKG='com.parkjeongseop.wipi.pdata4'; adb exec-out run-as "$PKG" cat cache/inotia-before.png > inotia-virtual-result/inotia-before.png 2>/dev/null || true; adb exec-out run-as "$PKG" cat cache/inotia-after-restart.png > inotia-virtual-result/inotia-after-restart.png 2>/dev/null || true; adb exec-out run-as "$PKG" cat cache/inotia-after-ok.png > inotia-virtual-result/inotia-after-ok.png 2>/dev/null || true; adb exec-out run-as "$PKG" cat cache/inotia-stage2.txt > inotia-virtual-result/inotia-stage2.txt 2>/dev/null || true; adb exec-out run-as "$PKG" cat cache/inotia-report.txt > inotia-virtual-result/inotia-report.txt 2>/dev/null || true; cp /tmp/inotia-instrumentation.txt inotia-virtual-result/instrumentation.txt || true; adb logcat -d > inotia-virtual-result/logcat.txt 2>/dev/null || true; ls -lh inotia-virtual-result || true; exit "$TEST_RC"
+          script: set -e; gradle -p android :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace; APP_APK=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -n1); TEST_APK=$(find android/app/build/outputs/apk/androidTest/debug -name '*.apk' | head -n1); adb install -r "$APP_APK"; adb install -r "$TEST_APK"; set +e; adb shell am instrument -w -r -e class com.parkjeongseop.wipi.InotiaPDataIntegrationTest com.parkjeongseop.wipi.pdata4.test/androidx.test.runner.AndroidJUnitRunner > /tmp/inotia-instrumentation.txt 2>&1; TEST_RC=$?; if grep -qE 'FAILURES!!!|No emulator frame was produced' /tmp/inotia-instrumentation.txt; then TEST_RC=1; elif grep -q 'OK (1 test)' /tmp/inotia-instrumentation.txt; then TEST_RC=0; fi; cat /tmp/inotia-instrumentation.txt; set -e; mkdir -p inotia-virtual-result; PKG='com.parkjeongseop.wipi.pdata4'; for f in inotia-before.png inotia-after-restart.png inotia-after-ok.png inotia-character.png inotia-stage2.txt inotia-report.txt; do adb exec-out run-as "$PKG" cat "cache/$f" > "inotia-virtual-result/$f" 2>/dev/null || true; done; cp /tmp/inotia-instrumentation.txt inotia-virtual-result/instrumentation.txt || true; adb logcat -d > inotia-virtual-result/logcat.txt 2>/dev/null || true; ls -lh inotia-virtual-result || true; exit "$TEST_RC"
 
       - name: Upload virtual-device evidence
         if: always()
