@@ -7,7 +7,9 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.ByteArrayInputStream
 import java.io.File
+import java.util.zip.ZipInputStream
 
 @RunWith(AndroidJUnit4::class)
 class InotiaPDataIntegrationTest {
@@ -53,22 +55,31 @@ class InotiaPDataIntegrationTest {
         saveFrame(context.cacheDir, "inotia-before.png", before)
         val beforeError = pendingError()
 
-        // Inject the real P data while that first emulator session is still alive.
+        // First run the V4 importer so the raw P files are copied into the persistent
+        // WIPI filesystem. Then deliberately replace V4's 1,143-record expansion with
+        // KTF C's verified single-backing-record model: each packaged P/<name>.dat blob
+        // is stored whole as db/<PID>/<name>.dat/1. The pinned WIE KTF runtime reads
+        // record 1 as a seekable byte stream and also treats P/<name> filesystem files
+        // as packaged databases.
         val stage2 = importer.importZip(entry, sourceUri).getOrThrow()
+        val singleStreamDbFiles = rewriteDatabasesAsSingleStreams(entry, fullZip, stage2.pid)
         File(context.cacheDir, "inotia-stage2.txt").writeText(
             "aid=${stage2.aid}\n" +
                 "pid=${stage2.pid}\n" +
                 "pFiles=${stage2.fileCount}\n" +
-                "dbFiles=${stage2.databaseFileCount}\n" +
-                "dbRecords=${stage2.databaseRecordCount}\n" +
+                "v4DbFiles=${stage2.databaseFileCount}\n" +
+                "v4DbRecords=${stage2.databaseRecordCount}\n" +
+                "singleStreamDbFiles=$singleStreamDbFiles\n" +
                 "bytes=${stage2.totalBytes}\n"
         )
+        assertTrue("Expected the five Inotia .dat databases", singleStreamDbFiles == 5)
 
         WipiNative.nativeStop()
         Thread.sleep(1000)
 
-        // Repeat the exact same startup sequence after sideloading. If sideloading is
-        // correct, this frame should no longer contain the 600KB prompt.
+        // Repeat the exact same startup sequence after sideloading. If the KTF single-
+        // stream representation is correct, this frame should no longer contain the
+        // 600KB prompt.
         assertTrue(WipiNative.nativeStart(entry.gameFile.readBytes(), entry.filename, entry.dataDir.absolutePath, ""))
         waitAndPump(7000)
         pressOk()
@@ -95,6 +106,49 @@ class InotiaPDataIntegrationTest {
         )
 
         WipiNative.nativeStop()
+    }
+
+    /**
+     * Experimental V5 representation based on the pinned KTF C runtime semantics.
+     * Only the five .dat files are database streams; prefs stays a plain filesystem
+     * file exactly as shipped in P/.
+     */
+    private fun rewriteDatabasesAsSingleStreams(entry: GameEntry, fullZip: ByteArray, pid: String): Int {
+        val dbRoot = File(entry.dataDir, "db/$pid").apply { mkdirs() }
+        var count = 0
+
+        ZipInputStream(ByteArrayInputStream(fullZip)).use { zip ->
+            while (true) {
+                val item = zip.nextEntry ?: break
+                if (!item.isDirectory) {
+                    val name = item.name.replace('\\', '/').trimStart('/')
+                    val marker = when {
+                        name.startsWith("P/") -> "P/"
+                        name.startsWith("p/") -> "p/"
+                        name.contains("/P/") -> "/P/"
+                        name.contains("/p/") -> "/p/"
+                        else -> null
+                    }
+                    if (marker != null) {
+                        val relative = if (name.startsWith(marker)) {
+                            name.removePrefix(marker)
+                        } else {
+                            name.substringAfter(marker)
+                        }
+                        if (relative.endsWith(".dat", ignoreCase = true) && !relative.contains("..")) {
+                            val blob = zip.readBytes()
+                            val dbDir = File(dbRoot, relative).canonicalFile
+                            dbDir.deleteRecursively()
+                            check(dbDir.mkdirs() || dbDir.isDirectory)
+                            File(dbDir, "1").writeBytes(blob)
+                            count++
+                        }
+                    }
+                }
+                zip.closeEntry()
+            }
+        }
+        return count
     }
 
     private fun pressOk() {
