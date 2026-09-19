@@ -2,12 +2,11 @@
 """Patch the pinned WIE checkout for Inotia 1's retired KTF receipt gate.
 
 W-Feature documents this title as the KTF subscriber-fallback case and also
-models KTF table slot 4 as a real byte seek. Inotia probes char.dat with
-SEEK_SET followed by SEEK_END before deciding whether the packaged data is
-valid. Pinned WIE currently rewinds for both calls and returns 0, so the game
-sees a zero-length file, removes char.dat, and takes the obsolete 600 KB
-network path. Align the seek semantics with W-Feature while keeping the
-subscriber identity and name-keyed remove compatibility from earlier tests.
+models KTF table slot 4 as a real byte seek. Inotia probes the packaged .dat
+files with SET/END seeks and, after those checks succeed, calls KTF database
+slot 12 (MC_dbListDataBase). Pinned WIE still leaves that slot as a fatal
+stub. Align those KTF handset semantics while keeping the subscriber identity
+and name-keyed remove compatibility from earlier tests.
 """
 from pathlib import Path
 import os
@@ -90,6 +89,29 @@ seek_replacement = '''    // KTF slot 4 is a byte seek: (handle, signed_offset, 
     Ok(position as i32)
 '''
 
+# KTF MC_dbListDataBase(buf, len): NUL-separated names, double-NUL terminated.
+# W-Feature confirms an empty database list is a legitimate successful result.
+# Inotia reaches this slot only after all five packaged .dat payloads have
+# validated; the fatal stub kills the emulated thread before a frame can be
+# produced. Start with the documented empty-list success semantics rather than
+# crashing the guest. If the title needs concrete names, the next trace will
+# show that without terminating the session here.
+listdb_insert_needle = '''pub async fn exists_database(context: &mut dyn WIPICContext, ptr_name: WIPICWord, r#type: i32) -> Result<i32> {
+'''
+listdb_function = '''pub async fn list_databases_ktf(context: &mut dyn WIPICContext, buf_ptr: WIPICWord, buf_len: WIPICWord) -> Result<i32> {
+    tracing::debug!("MC_dbListDataBase({buf_ptr:#x}, {buf_len})");
+    if buf_len < 2 {
+        return Ok(-18); // M_E_SHORTBUF
+    }
+    context.write_bytes(buf_ptr, &[0u8, 0u8])?;
+    tracing::debug!("MC_dbListDataBase -> 0 databases");
+    Ok(0)
+}
+
+'''
+listdb_method_needle = 'WIPICDatabaseMethodId::ListDatabases => Some(gen_stub(12, "MC_dbListDataBase")),'
+listdb_method_replacement = 'WIPICDatabaseMethodId::ListDatabases => Some(database::list_databases_ktf.into_body()),'
+
 handset_sig_needle = '''    async fn get_system_property(jvm: &Jvm, _: &mut WieJvmContext, name: ClassInstanceRef<String>) -> JvmResult<ClassInstanceRef<String>> {
 '''
 handset_sig_replacement = '''    async fn get_system_property(jvm: &Jvm, context: &mut WieJvmContext, name: ClassInstanceRef<String>) -> JvmResult<ClassInstanceRef<String>> {
@@ -113,6 +135,7 @@ for root in roots:
     kernel_paths = list(root.glob("**/wie_wipi_c/src/api/kernel.rs"))
     database_paths = list(root.glob("**/wie_wipi_c/src/api/database.rs"))
     handset_paths = list(root.glob("**/wie_wipi_java/src/classes/org/kwis/msp/handset/handset_property.rs"))
+    method_table_paths = list(root.glob("**/wie_ktf/src/runtime/wipi_c/method_table.rs"))
 
     for path in kernel_paths:
         text = path.read_text()
@@ -142,11 +165,23 @@ for root in roots:
         if seek_replacement not in text and seek_needle in text:
             text = text.replace(seek_needle, seek_replacement, 1)
             changed = True
+        if listdb_function not in text and listdb_insert_needle in text:
+            text = text.replace(listdb_insert_needle, listdb_function + listdb_insert_needle, 1)
+            changed = True
         if changed:
             path.write_text(text)
             patched.append(path)
-        elif delete_replacement in text and seek_replacement in text:
+        elif delete_replacement in text and seek_replacement in text and listdb_function in text:
             already.append(path)
+
+    for path in method_table_paths:
+        text = path.read_text()
+        if listdb_method_replacement in text:
+            already.append(path)
+            continue
+        if listdb_method_needle in text:
+            path.write_text(text.replace(listdb_method_needle, listdb_method_replacement, 1))
+            patched.append(path)
 
     for path in handset_paths:
         text = path.read_text()
