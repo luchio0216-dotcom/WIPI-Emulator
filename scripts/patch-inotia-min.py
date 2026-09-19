@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Patch the pinned WIE checkout for Inotia 1's retired KTF receipt gate.
+"""Patch the pinned WIE checkout for Inotia 1 KTF compatibility.
 
-W-Feature documents this title as the KTF subscriber-fallback case and also
-models KTF table slot 4 as a real byte seek. Inotia probes the packaged .dat
-files with SET/END seeks and, after those checks succeed, calls KTF database
-slot 12 (MC_dbListDataBase). Pinned WIE still leaves that slot as a fatal
-stub. Align those KTF handset semantics while keeping the subscriber identity
-and name-keyed remove compatibility from earlier tests.
+The title uses several KTF-specific behaviours that are not represented by the
+pinned generic WIPI implementation: subscriber fallback, name-keyed remove,
+stream seek semantics, and database-list probing. Keep the patch deliberately
+narrow to AID 010100D3 where identity is involved.
 """
 from pathlib import Path
 import os
@@ -72,9 +70,7 @@ seek_needle = '''    // KTF reuses slot 4 as a stream-control op `(handle, offse
     Ok(-22) // M_E_BADRECID
 '''
 seek_replacement = '''    // KTF slot 4 is a byte seek: (handle, signed_offset, origin).
-    // W-Feature and original handset behaviour use 0=SET, 1=CUR, 2=END.
-    // Inotia specifically does seek(0, SET) then seek(0, END) and compares
-    // the returned END position with the expected packaged data length.
+    // Original handset behaviour uses 0=SET, 1=CUR, 2=END.
     let base: i64 = match mode {
         0 => 0,
         1 => handle.read_cursor as i64,
@@ -89,21 +85,31 @@ seek_replacement = '''    // KTF slot 4 is a byte seek: (handle, signed_offset, 
     Ok(position as i32)
 '''
 
-# KTF MC_dbListDataBase(buf, len): NUL-separated names, double-NUL terminated.
-# W-Feature confirms an empty database list is a legitimate successful result.
-# Inotia reaches this slot only after all five packaged .dat payloads have
-# validated; the fatal stub kills the emulated thread before a frame can be
-# produced. Start with the documented empty-list success semantics rather than
-# crashing the guest. If the title needs concrete names, the next trace will
-# show that without terminating the session here.
 listdb_insert_needle = '''pub async fn exists_database(context: &mut dyn WIPICContext, ptr_name: WIPICWord, r#type: i32) -> Result<i32> {
 '''
 listdb_function = '''pub async fn list_databases_ktf(context: &mut dyn WIPICContext, buf_ptr: WIPICWord, buf_len: WIPICWord) -> Result<i32> {
     tracing::debug!("MC_dbListDataBase({buf_ptr:#x}, {buf_len})");
-    if buf_len < 2 {
-        return Ok(-18); // M_E_SHORTBUF
+
+    // Inotia calls this as MC_dbListDataBase(non-null, 0) immediately after
+    // selecting Scenario Mode. On the handset this is a legal zero-length
+    // probe. Returning M_E_SHORTBUF (-18) makes the game display its
+    // "not enough storage space" dialog. A zero-length probe must therefore
+    // succeed without touching the caller buffer.
+    if buf_len == 0 {
+        tracing::debug!("MC_dbListDataBase zero-length probe -> success");
+        return Ok(0);
     }
-    context.write_bytes(buf_ptr, &[0u8, 0u8])?;
+
+    if buf_ptr == 0 {
+        return Ok(-22);
+    }
+
+    // Empty database list: one NUL is sufficient for a one-byte buffer;
+    // use the conventional double-NUL terminator when space permits.
+    context.write_bytes(buf_ptr, &[0u8])?;
+    if buf_len >= 2 {
+        context.write_bytes(buf_ptr + 1, &[0u8])?;
+    }
     tracing::debug!("MC_dbListDataBase -> 0 databases");
     Ok(0)
 }
