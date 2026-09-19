@@ -21,10 +21,10 @@ class InotiaPDataIntegrationTest {
         val testContext = instrumentation.context
         WipiNative.init(context)
 
-        // Use the complete archive including the shipped P/ data.  W-Feature's
-        // compatibility notes for this exact KTF title show that the obsolete
-        // download branch is controlled by subscriber-number length, not by a
-        // need to fetch the already-packaged 600 KB again.
+        // Use the complete archive including the shipped P/ data. W-Feature's
+        // public research identifies this exact archive as a KTF subscriber-
+        // fallback case: the obsolete 600 KB receipt branch is selected by the
+        // subscriber identity, not by missing packaged data.
         val fullZip = testContext.assets.open("inotia1_flat.zip").use { it.readBytes() }
         val gameRoot = File(context.filesDir, "games/inotia-min-autotest").apply {
             deleteRecursively()
@@ -33,7 +33,7 @@ class InotiaPDataIntegrationTest {
         val gameFile = File(gameRoot, "inotia1.zip").apply { writeBytes(fullZip) }
         val entry = GameEntry(
             id = "inotia-min-autotest",
-            name = "Inotia 1 KTF MIN bypass test",
+            name = "Inotia 1 KTF subscriber fallback test",
             cover = null,
             gameFile = gameFile,
             filename = "inotia1.zip",
@@ -51,16 +51,16 @@ class InotiaPDataIntegrationTest {
         val titleError = pendingError()
         saveFrame(context.cacheDir, "inotia-before.png", titleFrame)
 
-        // Title -> legacy KTF data/billing check.  With AID 010100D3 the patched
-        // WIE runtime returns MIN=9999, which should skip the retired 600 KB
-        // network/receipt branch and enter the real game menu instead.
+        // Title -> KTF receipt check. For AID 010100D3 the patched runtime exposes
+        // the executable's own embedded subscriber fallback (01012349876) through
+        // PHONENUMBER and MIN, matching the game's expected handset identity.
         pressOk()
         val menuFrame = captureAfterDelay(8000)
         val menuError = pendingError()
         saveFrame(context.cacheDir, "inotia-after-restart.png", menuFrame)
 
-        // One more OK proves that the result is interactive game state rather
-        // than a cosmetically hidden prompt.
+        // One more OK proves that a successful result is interactive game state
+        // rather than a cosmetically hidden or frozen prompt.
         pressOk()
         val advancedFrame = captureAfterDelay(5000)
         val advancedError = pendingError()
@@ -74,8 +74,8 @@ class InotiaPDataIntegrationTest {
         File(context.cacheDir, "inotia-stage2.txt").writeText(
             "aid=010100D3\n" +
                 "pid=PD005362\n" +
-                "mode=complete-package+short-MIN-compatibility-shim\n" +
-                "minForInotia=9999\n" +
+                "mode=complete-package+embedded-subscriber-fallback\n" +
+                "subscriberForInotia=01012349876\n" +
                 "packageSha256=$digest\n" +
                 "packageBytes=${fullZip.size}\n" +
                 "--- final data tree ---\n$tree\n"
