@@ -21,10 +21,6 @@ class InotiaPDataIntegrationTest {
         val testContext = instrumentation.context
         WipiNative.init(context)
 
-        // Use the complete archive including the shipped P/ data. W-Feature's
-        // public research identifies this exact archive as a KTF subscriber-
-        // fallback case: the obsolete 600 KB receipt branch is selected by the
-        // subscriber identity, not by missing packaged data.
         val fullZip = testContext.assets.open("inotia1_flat.zip").use { it.readBytes() }
         val gameRoot = File(context.filesDir, "games/inotia-min-autotest").apply {
             deleteRecursively()
@@ -44,23 +40,17 @@ class InotiaPDataIntegrationTest {
 
         assertTrue(WipiNative.nativeStart(entry.gameFile.readBytes(), entry.filename, entry.dataDir.absolutePath, ""))
 
-        // Splash -> title.
         waitAndPump(7000)
         pressOk()
         val titleFrame = captureAfterDelay(3500)
         val titleError = pendingError()
         saveFrame(context.cacheDir, "inotia-before.png", titleFrame)
 
-        // Title -> KTF receipt check. For AID 010100D3 the patched runtime exposes
-        // the executable's own embedded subscriber fallback (01012349876) through
-        // PHONENUMBER and MIN, matching the game's expected handset identity.
         pressOk()
         val menuFrame = captureAfterDelay(8000)
         val menuError = pendingError()
         saveFrame(context.cacheDir, "inotia-after-restart.png", menuFrame)
 
-        // One more OK proves that a successful result is interactive game state
-        // rather than a cosmetically hidden or frozen prompt.
         pressOk()
         val advancedFrame = captureAfterDelay(5000)
         val advancedError = pendingError()
@@ -71,7 +61,7 @@ class InotiaPDataIntegrationTest {
         val tree = summarizeDataTree(entry.dataDir)
         val digest = MessageDigest.getInstance("SHA-256").digest(fullZip).joinToString("") { "%02x".format(it) }
 
-        File(context.cacheDir, "inotia-stage2.txt").writeText(
+        val stage2 =
             "aid=010100D3\n" +
                 "pid=PD005362\n" +
                 "mode=complete-package+embedded-subscriber-fallback\n" +
@@ -79,14 +69,25 @@ class InotiaPDataIntegrationTest {
                 "packageSha256=$digest\n" +
                 "packageBytes=${fullZip.size}\n" +
                 "--- final data tree ---\n$tree\n"
-        )
-        File(context.cacheDir, "inotia-report.txt").writeText(
+        val report =
             "titleError=${titleError ?: "none"}\n" +
                 "menuError=${menuError ?: "none"}\n" +
                 "advancedError=${advancedError ?: "none"}\n" +
                 "titleToMenuDiff=$titleToMenuDiff\n" +
                 "menuToAdvancedDiff=$menuToAdvancedDiff\n"
-        )
+
+        File(context.cacheDir, "inotia-stage2.txt").writeText(stage2)
+        File(context.cacheDir, "inotia-report.txt").writeText(report)
+
+        // Keep the same PNG artifacts, but also emit the decisive text evidence to
+        // instrumentation stdout. This makes a green CI run independently auditable
+        // even when the binary artifact cannot be downloaded by an automation client.
+        println("INOTIA_STAGE2_BEGIN")
+        print(stage2)
+        println("INOTIA_STAGE2_END")
+        println("INOTIA_REPORT_BEGIN")
+        print(report)
+        println("INOTIA_REPORT_END")
 
         WipiNative.nativeStop()
     }
