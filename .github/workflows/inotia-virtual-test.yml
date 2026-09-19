@@ -36,7 +36,7 @@ jobs:
           mkdir -p /tmp/inotia android/app/src/androidTest/assets
           curl -fsSL -A 'Mozilla/5.0' 'https://dubigame.tistory.com/135' -o /tmp/inotia/page.html
           python3 - <<'PY'
-          import html, re, subprocess, pathlib, zipfile, urllib.parse
+          import html, re, subprocess, pathlib, zipfile
           page = pathlib.Path('/tmp/inotia/page.html').read_text(errors='ignore')
           candidates = re.findall(r'href=["\']([^"\']+)["\']', page, flags=re.I)
           urls = []
@@ -45,7 +45,6 @@ jobs:
               if 'blog.kakaocdn.net' in u and ('.zip' in u.lower() or 'tfile.zip' in u.lower()):
                   urls.append(u)
           if not urls:
-              # Tistory sometimes embeds attachment URL in JSON/script text instead of a plain href.
               for m in re.findall(r'https?://[^"\'<> ]*blog\.kakaocdn\.net[^"\'<> ]+', page, flags=re.I):
                   u = html.unescape(m.replace('\\u0026', '&').replace('\\/', '/'))
                   if '.zip' in u.lower() or 'tfile.zip' in u.lower():
@@ -107,7 +106,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm || true
 
-      - name: Run real game in Android virtual device
+      - name: Run real game in Android virtual device and collect evidence
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
@@ -117,20 +116,18 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
           script: |
-            set -e
+            set +e
             gradle -p android :app:connectedDebugAndroidTest --stacktrace
-
-      - name: Collect virtual-device screenshots and report
-        if: always()
-        shell: bash
-        run: |
-          mkdir -p inotia-virtual-result
-          PKG='com.parkjeongseop.wipi.pdata4'
-          for f in inotia-before.png inotia-after-restart.png inotia-after-ok.png inotia-stage2.txt inotia-report.txt; do
-            adb exec-out run-as "$PKG" cat "cache/$f" > "inotia-virtual-result/$f" 2>/dev/null || true
-          done
-          adb logcat -d > inotia-virtual-result/logcat.txt 2>/dev/null || true
-          ls -lh inotia-virtual-result || true
+            TEST_RC=$?
+            set -e
+            mkdir -p inotia-virtual-result
+            PKG='com.parkjeongseop.wipi.pdata4'
+            for f in inotia-before.png inotia-after-restart.png inotia-after-ok.png inotia-stage2.txt inotia-report.txt; do
+              adb exec-out run-as "$PKG" cat "cache/$f" > "inotia-virtual-result/$f" 2>/dev/null || true
+            done
+            adb logcat -d > inotia-virtual-result/logcat.txt 2>/dev/null || true
+            ls -lh inotia-virtual-result || true
+            exit "$TEST_RC"
 
       - name: Upload virtual-device evidence
         if: always()
