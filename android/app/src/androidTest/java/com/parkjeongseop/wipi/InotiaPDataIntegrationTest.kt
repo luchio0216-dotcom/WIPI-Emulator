@@ -16,10 +16,14 @@ class InotiaPDataIntegrationTest {
 
     @Test
     fun firstRunThenInjectPDataAndRestart() {
-        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val testContext = instrumentation.context
         WipiNative.init(context)
 
-        val fullZip = context.assets.open("inotia1_flat.zip").use { it.readBytes() }
+        // inotia1_flat.zip is packaged with the androidTest APK, so read it from
+        // the instrumentation context rather than the target application context.
+        val fullZip = testContext.assets.open("inotia1_flat.zip").use { it.readBytes() }
         val sourceZip = File(context.cacheDir, "inotia1_full.zip").apply { writeBytes(fullZip) }
 
         val gameRoot = File(context.filesDir, "games/inotia-autotest").apply {
