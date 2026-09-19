@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Patch the pinned WIE checkout for Inotia 1's retired KTF receipt gate.
 
-This keeps the embedded subscriber identity workaround and also aligns one
-storage semantic with W-Feature: KTF table slot 6 is a name-keyed file/database
-remove when the first argument is not an open handle. WIE currently turns that
-shape into a no-op; W-Feature actually removes the named store. Inotia 1 calls
-that path on char.dat immediately before its obsolete 600 KB branch, so this
-experiment makes the side effect real instead of only returning success.
+W-Feature documents this title as the KTF subscriber-fallback case: the
+recognized session must expose the executable's embedded subscriber identity
+consistently through every handset-property surface. Keep the C identity and
+name-keyed removal compatibility from the previous experiments, and additionally
+align WIE's Java HandsetProperty reader for AID 010100D3.
 """
 from pathlib import Path
 import os
@@ -36,8 +35,6 @@ delete_needle = '''    // Not a real handle — KTF name-keyed form. No-op prese
 '''
 delete_replacement = '''    // Not a real handle — KTF name-keyed form. W-Feature models this slot as
     // MC_fsRemove(name, area): the named per-title store is actually removed.
-    // Inotia 1 reaches this exact path for char.dat before its legacy receipt
-    // decision, so preserve the successful return value but perform the side effect.
     let Ok(name) = String::from_utf8(read_null_terminated_string_bytes(context, a0 as u32)?) else {
         return Ok(-22);
     };
@@ -51,11 +48,29 @@ delete_replacement = '''    // Not a real handle — KTF name-keyed form. W-Feat
     Ok(0)
 '''
 
+handset_sig_needle = '''    async fn get_system_property(jvm: &Jvm, _: &mut WieJvmContext, name: ClassInstanceRef<String>) -> JvmResult<ClassInstanceRef<String>> {
+'''
+handset_sig_replacement = '''    async fn get_system_property(jvm: &Jvm, context: &mut WieJvmContext, name: ClassInstanceRef<String>) -> JvmResult<ClassInstanceRef<String>> {
+'''
+handset_value_needle = '''        let value = match name.as_ref() {
+            "VIBRATORLEVEL" => "0",
+            _ => "",
+        };
+'''
+handset_value_replacement = f'''        let inotia = context.system().aid() == "{AID}";
+        let value = match name.as_ref() {{
+            "VIBRATORLEVEL" => "0",
+            "PHONENUMBER" | "MIN" if inotia => "{FALLBACK}",
+            _ => "",
+        }};
+'''
+
 patched = []
 already = []
 for root in roots:
     kernel_paths = list(root.glob("**/wie_wipi_c/src/api/kernel.rs"))
     database_paths = list(root.glob("**/wie_wipi_c/src/api/database.rs"))
+    handset_paths = list(root.glob("**/wie_wipi_java/src/classes/org/kwis/msp/handset/handset_property.rs"))
 
     for path in kernel_paths:
         text = path.read_text()
@@ -83,6 +98,22 @@ for root in roots:
             continue
         if delete_needle in text:
             path.write_text(text.replace(delete_needle, delete_replacement, 1))
+            patched.append(path)
+
+    for path in handset_paths:
+        text = path.read_text()
+        if handset_value_replacement in text:
+            already.append(path)
+            continue
+        changed = False
+        if handset_sig_needle in text:
+            text = text.replace(handset_sig_needle, handset_sig_replacement, 1)
+            changed = True
+        if handset_value_needle in text:
+            text = text.replace(handset_value_needle, handset_value_replacement, 1)
+            changed = True
+        if changed:
+            path.write_text(text)
             patched.append(path)
 
 if not patched and not already:
