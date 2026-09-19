@@ -24,8 +24,10 @@ android {
         targetSdk = 36
         versionCode = 4001
         versionName = "0.2.0-pdata4"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            // arm64 = 실기기, x86_64 = GitHub Actions Android 가상기기 검증용
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
     }
 
@@ -83,4 +85,7 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }
