@@ -51,25 +51,33 @@ class InotiaPDataIntegrationTest {
         val before = captureAfterDelay(8000)
         saveFrame(context.cacheDir, "inotia-before.png", before)
         val beforeError = pendingError()
+        val treeBefore = summarizeDataTree(entry.dataDir)
 
-        // V6 experiment: keep the raw P files in the WIPI filesystem and mirror
-        // every shipped P payload that looks stateful into KTF's single-record DB
-        // model. Previous V5 covered only the five *.dat blobs; this run also puts
-        // the 64-byte `prefs` payload into db/<PID>/prefs/1 because client.bin
-        // references the literal name "prefs" and it may be opened through the C DB
-        // API rather than the file API.
+        // V7 experiment: the current upstream WIPI-C implementation keys KTF DBs
+        // by PID, but this Android fork is pinned to an older WIE revision. Mirror
+        // each raw stream-style state blob under BOTH PID and AID namespaces to
+        // test whether that older runtime uses AID for Clet database lookup.
+        // Keep the normal raw P filesystem copy and V4-expanded records as well.
         val stage2 = importer.importZip(entry, sourceUri).getOrThrow()
-        val streamDbFiles = rewritePStateAsSingleStreams(entry, fullZip, stage2.pid)
+        val streamDbFiles = rewritePStateAsSingleStreams(
+            entry = entry,
+            fullZip = fullZip,
+            namespaces = listOf(stage2.pid, stage2.aid).distinct(),
+        )
+        val treeAfterImport = summarizeDataTree(entry.dataDir)
         File(context.cacheDir, "inotia-stage2.txt").writeText(
             "aid=${stage2.aid}\n" +
                 "pid=${stage2.pid}\n" +
                 "pFiles=${stage2.fileCount}\n" +
                 "v4DbFiles=${stage2.databaseFileCount}\n" +
                 "v4DbRecords=${stage2.databaseRecordCount}\n" +
-                "singleStreamStateFiles=$streamDbFiles\n" +
-                "bytes=${stage2.totalBytes}\n"
+                "singleStreamStateWrites=$streamDbFiles\n" +
+                "singleStreamNamespaces=${listOf(stage2.pid, stage2.aid).distinct().joinToString(",")}\n" +
+                "bytes=${stage2.totalBytes}\n" +
+                "--- data tree before import ---\n$treeBefore\n" +
+                "--- data tree after import ---\n$treeAfterImport\n"
         )
-        assertTrue("Expected five .dat databases plus prefs", streamDbFiles == 6)
+        assertTrue("Expected six state blobs in both PID and AID namespaces", streamDbFiles == 12)
 
         WipiNative.nativeStop()
         Thread.sleep(1000)
@@ -100,8 +108,7 @@ class InotiaPDataIntegrationTest {
         WipiNative.nativeStop()
     }
 
-    private fun rewritePStateAsSingleStreams(entry: GameEntry, fullZip: ByteArray, pid: String): Int {
-        val dbRoot = File(entry.dataDir, "db/$pid").apply { mkdirs() }
+    private fun rewritePStateAsSingleStreams(entry: GameEntry, fullZip: ByteArray, namespaces: List<String>): Int {
         var count = 0
 
         ZipInputStream(ByteArrayInputStream(fullZip)).use { zip ->
@@ -126,11 +133,14 @@ class InotiaPDataIntegrationTest {
                             relative.equals("prefs", ignoreCase = true)
                         if (isStatePayload && !relative.contains("..")) {
                             val blob = zip.readBytes()
-                            val dbDir = File(dbRoot, relative).canonicalFile
-                            dbDir.deleteRecursively()
-                            check(dbDir.mkdirs() || dbDir.isDirectory)
-                            File(dbDir, "1").writeBytes(blob)
-                            count++
+                            for (namespace in namespaces) {
+                                val dbRoot = File(entry.dataDir, "db/$namespace").apply { mkdirs() }
+                                val dbDir = File(dbRoot, relative).canonicalFile
+                                dbDir.deleteRecursively()
+                                check(dbDir.mkdirs() || dbDir.isDirectory)
+                                File(dbDir, "1").writeBytes(blob)
+                                count++
+                            }
                         }
                     }
                 }
@@ -138,6 +148,19 @@ class InotiaPDataIntegrationTest {
             }
         }
         return count
+    }
+
+    private fun summarizeDataTree(root: File): String {
+        if (!root.exists()) return "<missing>"
+        return root.walkTopDown()
+            .filter { it.isFile }
+            .map { file ->
+                val rel = file.relativeTo(root).path.replace(File.separatorChar, '/')
+                "$rel (${file.length()})"
+            }
+            .sorted()
+            .joinToString("\n")
+            .ifBlank { "<empty>" }
     }
 
     private fun pressOk() {
