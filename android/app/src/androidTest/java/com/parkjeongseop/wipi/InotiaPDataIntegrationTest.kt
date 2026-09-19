@@ -45,9 +45,6 @@ class InotiaPDataIntegrationTest {
         val stage1 = importer.prepareFirstStage(entry, sourceUri).getOrThrow()
         assertTrue(stage1.removedPFiles > 0)
 
-        // The Com2uS splash remains visible for several seconds on the virtual device.
-        // Advance once after the splash and then wait long enough for the legacy 600KB
-        // prompt to appear before taking the baseline frame.
         assertTrue(WipiNative.nativeStart(entry.gameFile.readBytes(), entry.filename, entry.dataDir.absolutePath, ""))
         waitAndPump(7000)
         pressOk()
@@ -55,31 +52,28 @@ class InotiaPDataIntegrationTest {
         saveFrame(context.cacheDir, "inotia-before.png", before)
         val beforeError = pendingError()
 
-        // First run the V4 importer so the raw P files are copied into the persistent
-        // WIPI filesystem. Then deliberately replace V4's 1,143-record expansion with
-        // KTF C's verified single-backing-record model: each packaged P/<name>.dat blob
-        // is stored whole as db/<PID>/<name>.dat/1. The pinned WIE KTF runtime reads
-        // record 1 as a seekable byte stream and also treats P/<name> filesystem files
-        // as packaged databases.
+        // V6 experiment: keep the raw P files in the WIPI filesystem and mirror
+        // every shipped P payload that looks stateful into KTF's single-record DB
+        // model. Previous V5 covered only the five *.dat blobs; this run also puts
+        // the 64-byte `prefs` payload into db/<PID>/prefs/1 because client.bin
+        // references the literal name "prefs" and it may be opened through the C DB
+        // API rather than the file API.
         val stage2 = importer.importZip(entry, sourceUri).getOrThrow()
-        val singleStreamDbFiles = rewriteDatabasesAsSingleStreams(entry, fullZip, stage2.pid)
+        val streamDbFiles = rewritePStateAsSingleStreams(entry, fullZip, stage2.pid)
         File(context.cacheDir, "inotia-stage2.txt").writeText(
             "aid=${stage2.aid}\n" +
                 "pid=${stage2.pid}\n" +
                 "pFiles=${stage2.fileCount}\n" +
                 "v4DbFiles=${stage2.databaseFileCount}\n" +
                 "v4DbRecords=${stage2.databaseRecordCount}\n" +
-                "singleStreamDbFiles=$singleStreamDbFiles\n" +
+                "singleStreamStateFiles=$streamDbFiles\n" +
                 "bytes=${stage2.totalBytes}\n"
         )
-        assertTrue("Expected the five Inotia .dat databases", singleStreamDbFiles == 5)
+        assertTrue("Expected five .dat databases plus prefs", streamDbFiles == 6)
 
         WipiNative.nativeStop()
         Thread.sleep(1000)
 
-        // Repeat the exact same startup sequence after sideloading. If the KTF single-
-        // stream representation is correct, this frame should no longer contain the
-        // 600KB prompt.
         assertTrue(WipiNative.nativeStart(entry.gameFile.readBytes(), entry.filename, entry.dataDir.absolutePath, ""))
         waitAndPump(7000)
         pressOk()
@@ -90,8 +84,6 @@ class InotiaPDataIntegrationTest {
         val popupRegionDiff = diffRatio(before, afterRestart, 35, 55, 205, 230)
         val fullDiff = diffRatio(before, afterRestart, 0, 0, width, height)
 
-        // One more OK distinguishes a surviving download prompt (network attempt / error)
-        // from a successful install (advance from title into the game/menu).
         pressOk()
         val afterOk = captureAfterDelay(5000)
         saveFrame(context.cacheDir, "inotia-after-ok.png", afterOk)
@@ -108,12 +100,7 @@ class InotiaPDataIntegrationTest {
         WipiNative.nativeStop()
     }
 
-    /**
-     * Experimental V5 representation based on the pinned KTF C runtime semantics.
-     * Only the five .dat files are database streams; prefs stays a plain filesystem
-     * file exactly as shipped in P/.
-     */
-    private fun rewriteDatabasesAsSingleStreams(entry: GameEntry, fullZip: ByteArray, pid: String): Int {
+    private fun rewritePStateAsSingleStreams(entry: GameEntry, fullZip: ByteArray, pid: String): Int {
         val dbRoot = File(entry.dataDir, "db/$pid").apply { mkdirs() }
         var count = 0
 
@@ -135,7 +122,9 @@ class InotiaPDataIntegrationTest {
                         } else {
                             name.substringAfter(marker)
                         }
-                        if (relative.endsWith(".dat", ignoreCase = true) && !relative.contains("..")) {
+                        val isStatePayload = relative.endsWith(".dat", ignoreCase = true) ||
+                            relative.equals("prefs", ignoreCase = true)
+                        if (isStatePayload && !relative.contains("..")) {
                             val blob = zip.readBytes()
                             val dbDir = File(dbRoot, relative).canonicalFile
                             dbDir.deleteRecursively()
