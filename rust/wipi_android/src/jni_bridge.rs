@@ -196,9 +196,11 @@ pub extern "system" fn Java_com_parkjeongseop_wipi_WipiNative_nativeInit(env: JN
     }
 
     use tracing_subscriber::layer::SubscriberExt;
-    // TRACE 전체를 logcat으로 보내면 에뮬레이션이 수십 배 느려짐 — INFO 이상만
+    // Keep normal runtime output at INFO, but expose the exact WIPI-C database
+    // calls for the Inotia virtual-device investigation. This target is narrow
+    // enough to avoid the severe slowdown caused by enabling TRACE globally.
     let subscriber = tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new("info"))
+        .with(tracing_subscriber::EnvFilter::new("info,wie_wipi_c::api::database=debug"))
         .with(paranoid_android::layer("wie"));
     let _ = tracing::subscriber::set_global_default(subscriber);
 

@@ -1,0 +1,80 @@
+name: Build P-data Android APK V4
+
+on:
+  push:
+    branches:
+      - feature/p-data-import
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Install Android NDK
+        shell: bash
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
+
+      - name: Set up Rust Android target
+        shell: bash
+        run: |
+          rustup target add aarch64-linux-android
+
+      - name: Build Rust JNI library with Inotia KTF compatibility shim
+        shell: bash
+        env:
+          NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/27.1.12297006
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$ANDROID_HOME/ndk/27.1.12297006/toolchains/llvm/prebuilt/linux-x86_64"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TOOLCHAIN/bin/aarch64-linux-android26-clang"
+          export CC_aarch64_linux_android="$TOOLCHAIN/bin/aarch64-linux-android26-clang"
+          export AR_aarch64_linux_android="$TOOLCHAIN/bin/llvm-ar"
+          export CFLAGS_aarch64_linux_android="-D__ANDROID_API__=26"
+          cd rust
+          cargo fetch
+          cd ..
+          python3 scripts/patch-inotia-min.py
+          cd rust
+          cargo build -p wipi_android --release --target aarch64-linux-android
+          cd ..
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          cp rust/target/aarch64-linux-android/release/libwipi_android.so android/app/src/main/jniLibs/arm64-v8a/
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          gradle -p android :app:assembleDebug --stacktrace
+
+      - name: Rename APK
+        shell: bash
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk WIPI-Emulator-Inotia-KTF-arm64.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WIPI-Emulator-Inotia-KTF-arm64
+          path: WIPI-Emulator-Inotia-KTF-arm64.apk
+          if-no-files-found: error
+          retention-days: 30
