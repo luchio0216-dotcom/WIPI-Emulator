@@ -53,11 +53,7 @@ jobs:
               raise SystemExit('Could not locate the public Inotia ZIP attachment URL')
           url = urls[0]
           print('attachment:', url.split('?')[0])
-          subprocess.run([
-              'curl','-fL','--retry','3','-A','Mozilla/5.0',
-              '-e','https://dubigame.tistory.com/135',url,
-              '-o','/tmp/inotia/original.zip'
-          ], check=True)
+          subprocess.run(['curl','-fL','--retry','3','-A','Mozilla/5.0','-e','https://dubigame.tistory.com/135',url,'-o','/tmp/inotia/original.zip'], check=True)
           src = zipfile.ZipFile('/tmp/inotia/original.zip')
           names = [n.replace('\\','/') for n in src.namelist()]
           adf = next((n for n in names if n == '__adf__' or n.endswith('/__adf__')), None)
@@ -71,9 +67,8 @@ jobs:
                   if info.is_dir() or not n.startswith(prefix):
                       continue
                   rel = n[len(prefix):]
-                  if not rel:
-                      continue
-                  out.writestr(rel, src.read(info))
+                  if rel:
+                      out.writestr(rel, src.read(info))
           digest = hashlib.sha256(out_path.read_bytes()).hexdigest()
           print('created', out_path, out_path.stat().st_size, 'bytes sha256=', digest)
           PY
@@ -98,6 +93,7 @@ jobs:
           cargo fetch
           cd ..
           python3 scripts/patch-inotia-min.py
+          python3 scripts/patch-inotia-storage-probe.py
           cd rust
           cargo build -p wipi_android --release --target x86_64-linux-android
           cd ..
