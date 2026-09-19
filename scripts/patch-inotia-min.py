@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Patch the pinned WIE checkout for Inotia 1's retired KTF receipt gate.
 
-W-Feature documents this title as the KTF subscriber-fallback case: the
-recognized session must expose the executable's embedded subscriber identity
-consistently through every handset-property surface. Keep the C identity and
-name-keyed removal compatibility from the previous experiments, and additionally
-align WIE's Java HandsetProperty reader for AID 010100D3.
+W-Feature documents this title as the KTF subscriber-fallback case and also
+models KTF table slot 4 as a real byte seek. Inotia probes char.dat with
+SEEK_SET followed by SEEK_END before deciding whether the packaged data is
+valid. Pinned WIE currently rewinds for both calls and returns 0, so the game
+sees a zero-length file, removes char.dat, and takes the obsolete 600 KB
+network path. Align the seek semantics with W-Feature while keeping the
+subscriber identity and name-keyed remove compatibility from earlier tests.
 """
 from pathlib import Path
 import os
@@ -46,6 +48,46 @@ delete_replacement = '''    // Not a real handle — KTF name-keyed form. W-Feat
     }
     tracing::debug!("MC_dbDeleteRecord(name-keyed {name:?}, {a1}) -> 0 (removed backing record)");
     Ok(0)
+'''
+
+seek_needle = '''    // KTF reuses slot 4 as a stream-control op `(handle, offset, mode)`. The
+    // shapes observed across games:
+    //
+    //   - `(handle, slot_offset, 0)` — multi-slot save files store each
+    //     slot at a known byte offset within record 1; this seeks both
+    //     cursors so the next read/write hits the right slot while
+    //     preserving the bytes belonging to the other slots.
+    //   - `(handle, 0, 0)` and `(handle, 0, 2)` — rewinds both cursors.
+    //     mode=0 vs 2 isn't a length and isn't truncate (truncating on
+    //     mode=2 on the read path destroys a prefetched buffer during a
+    //     subsequent re-open and wipes the saved record). Both are treated
+    //     as plain seek-and-rewind.
+    if rec_id >= 0 {
+        let offset = rec_id as u32;
+        handle.read_cursor = offset;
+        handle.write_cursor = offset;
+        write_generic(context, db_id as _, handle)?;
+        return Ok(0);
+    }
+
+    Ok(-22) // M_E_BADRECID
+'''
+seek_replacement = '''    // KTF slot 4 is a byte seek: (handle, signed_offset, origin).
+    // W-Feature and original handset behaviour use 0=SET, 1=CUR, 2=END.
+    // Inotia specifically does seek(0, SET) then seek(0, END) and compares
+    // the returned END position with the expected packaged data length.
+    let base: i64 = match mode {
+        0 => 0,
+        1 => handle.read_cursor as i64,
+        2 => handle.buffer_len as i64,
+        _ => return Ok(-22),
+    };
+    let position = (base + rec_id as i64).clamp(0, handle.buffer_len as i64) as u32;
+    handle.read_cursor = position;
+    handle.write_cursor = position;
+    write_generic(context, db_id as _, handle)?;
+    tracing::debug!("MC_dbSelectRecord seek -> {position}");
+    Ok(position as i32)
 '''
 
 handset_sig_needle = '''    async fn get_system_property(jvm: &Jvm, _: &mut WieJvmContext, name: ClassInstanceRef<String>) -> JvmResult<ClassInstanceRef<String>> {
@@ -93,12 +135,18 @@ for root in roots:
 
     for path in database_paths:
         text = path.read_text()
-        if delete_replacement in text:
-            already.append(path)
-            continue
-        if delete_needle in text:
-            path.write_text(text.replace(delete_needle, delete_replacement, 1))
+        changed = False
+        if delete_replacement not in text and delete_needle in text:
+            text = text.replace(delete_needle, delete_replacement, 1)
+            changed = True
+        if seek_replacement not in text and seek_needle in text:
+            text = text.replace(seek_needle, seek_replacement, 1)
+            changed = True
+        if changed:
+            path.write_text(text)
             patched.append(path)
+        elif delete_replacement in text and seek_replacement in text:
+            already.append(path)
 
     for path in handset_paths:
         text = path.read_text()
