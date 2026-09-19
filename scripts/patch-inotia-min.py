@@ -91,13 +91,15 @@ listdb_function = '''pub async fn list_databases_ktf(context: &mut dyn WIPICCont
     tracing::debug!("MC_dbListDataBase({buf_ptr:#x}, {buf_len})");
 
     // Inotia calls this as MC_dbListDataBase(non-null, 0) immediately after
-    // selecting Scenario Mode. On the handset this is a legal zero-length
-    // probe. Returning M_E_SHORTBUF (-18) makes the game display its
-    // "not enough storage space" dialog. A zero-length probe must therefore
-    // succeed without touching the caller buffer.
+    // selecting Scenario Mode. Run #27 proved that returning 0 here still
+    // takes the game's "not enough storage space" branch and no later WIPI-C
+    // call occurs. Treat the zero-length form as a capacity/count probe: the
+    // working WIPI-root layout exposes six persistent stores (prefs plus five
+    // packaged data DBs), so report that positive capacity without touching
+    // the caller buffer.
     if buf_len == 0 {
-        tracing::debug!("MC_dbListDataBase zero-length probe -> success");
-        return Ok(0);
+        tracing::debug!("MC_dbListDataBase zero-length capacity probe -> 6");
+        return Ok(6);
     }
 
     if buf_ptr == 0 {
