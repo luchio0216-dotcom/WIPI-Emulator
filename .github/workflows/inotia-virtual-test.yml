@@ -36,7 +36,7 @@ jobs:
           mkdir -p /tmp/inotia android/app/src/androidTest/assets
           curl -fsSL -A 'Mozilla/5.0' 'https://dubigame.tistory.com/135' -o /tmp/inotia/page.html
           python3 - <<'PY'
-          import html, re, subprocess, pathlib, zipfile
+          import html, re, subprocess, pathlib, zipfile, hashlib
           page = pathlib.Path('/tmp/inotia/page.html').read_text(errors='ignore')
           candidates = re.findall(r'href=["\']([^"\']+)["\']', page, flags=re.I)
           urls = []
@@ -74,7 +74,8 @@ jobs:
                   if not rel:
                       continue
                   out.writestr(rel, src.read(info))
-          print('created', out_path, out_path.stat().st_size, 'bytes')
+          digest = hashlib.sha256(out_path.read_bytes()).hexdigest()
+          print('created', out_path, out_path.stat().st_size, 'bytes sha256=', digest)
           PY
 
       - name: Install Android NDK and Rust x86_64 target
@@ -84,7 +85,7 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
           rustup target add x86_64-linux-android
 
-      - name: Build x86_64 Rust JNI library for virtual device
+      - name: Build x86_64 Rust JNI library with Inotia KTF compatibility shim
         shell: bash
         run: |
           set -euo pipefail
@@ -93,6 +94,10 @@ jobs:
           export CC_x86_64_linux_android="$TOOLCHAIN/bin/x86_64-linux-android26-clang"
           export AR_x86_64_linux_android="$TOOLCHAIN/bin/llvm-ar"
           export CFLAGS_x86_64_linux_android="-D__ANDROID_API__=26"
+          cd rust
+          cargo fetch
+          cd ..
+          python3 scripts/patch-inotia-min.py
           cd rust
           cargo build -p wipi_android --release --target x86_64-linux-android
           cd ..
