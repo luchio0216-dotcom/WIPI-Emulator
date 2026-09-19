@@ -7,9 +7,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.io.ByteArrayInputStream
 import java.io.File
-import java.util.zip.ZipInputStream
 
 @RunWith(AndroidJUnit4::class)
 class InotiaPDataIntegrationTest {
@@ -45,6 +43,9 @@ class InotiaPDataIntegrationTest {
         val stage1 = importer.prepareFirstStage(entry, sourceUri).getOrThrow()
         assertTrue(stage1.removedPFiles > 0)
 
+        // First run with P/ physically removed from the package. This reproduces
+        // the legacy handset procedure up to the 600KB download prompt and lets
+        // the runtime create its own persistent prefs/install state first.
         assertTrue(WipiNative.nativeStart(entry.gameFile.readBytes(), entry.filename, entry.dataDir.absolutePath, ""))
         waitAndPump(7000)
         pressOk()
@@ -53,31 +54,22 @@ class InotiaPDataIntegrationTest {
         val beforeError = pendingError()
         val treeBefore = summarizeDataTree(entry.dataDir)
 
-        // V7 experiment: the current upstream WIPI-C implementation keys KTF DBs
-        // by PID, but this Android fork is pinned to an older WIE revision. Mirror
-        // each raw stream-style state blob under BOTH PID and AID namespaces to
-        // test whether that older runtime uses AID for Clet database lookup.
-        // Keep the normal raw P filesystem copy and V4-expanded records as well.
-        val stage2 = importer.importZip(entry, sourceUri).getOrThrow()
-        val streamDbFiles = rewritePStateAsSingleStreams(
-            entry = entry,
-            fullZip = fullZip,
-            namespaces = listOf(stage2.pid, stage2.aid).distinct(),
-        )
-        val treeAfterImport = summarizeDataTree(entry.dataDir)
+        // V8 experiment: stop guessing the persistent DB representation. The
+        // pinned WIE KTF runtime has a packaged-database path that resolves P/<db>
+        // resources from the installed game package. Restore the ORIGINAL full
+        // package (including P/) after the first-run prompt while keeping dataDir
+        // untouched, then restart. This mirrors the old phone instruction of
+        // copying P back without deleting the install/prefs state.
+        entry.gameFile.writeBytes(fullZip)
+        val treeAfterPackageRestore = summarizeDataTree(entry.dataDir)
         File(context.cacheDir, "inotia-stage2.txt").writeText(
-            "aid=${stage2.aid}\n" +
-                "pid=${stage2.pid}\n" +
-                "pFiles=${stage2.fileCount}\n" +
-                "v4DbFiles=${stage2.databaseFileCount}\n" +
-                "v4DbRecords=${stage2.databaseRecordCount}\n" +
-                "singleStreamStateWrites=$streamDbFiles\n" +
-                "singleStreamNamespaces=${listOf(stage2.pid, stage2.aid).distinct().joinToString(",")}\n" +
-                "bytes=${stage2.totalBytes}\n" +
-                "--- data tree before import ---\n$treeBefore\n" +
-                "--- data tree after import ---\n$treeAfterImport\n"
+            "aid=${stage1.aid}\n" +
+                "pid=${stage1.pid}\n" +
+                "mode=restore-original-package-with-P\n" +
+                "restoredPackageBytes=${fullZip.size}\n" +
+                "--- data tree before package restore ---\n$treeBefore\n" +
+                "--- data tree immediately after package restore ---\n$treeAfterPackageRestore\n"
         )
-        assertTrue("Expected six state blobs in both PID and AID namespaces", streamDbFiles == 12)
 
         WipiNative.nativeStop()
         Thread.sleep(1000)
@@ -88,6 +80,7 @@ class InotiaPDataIntegrationTest {
         val afterRestart = captureAfterDelay(8000)
         saveFrame(context.cacheDir, "inotia-after-restart.png", afterRestart)
         val restartError = pendingError()
+        val treeAfterRestart = summarizeDataTree(entry.dataDir)
 
         val popupRegionDiff = diffRatio(before, afterRestart, 35, 55, 205, 230)
         val fullDiff = diffRatio(before, afterRestart, 0, 0, width, height)
@@ -102,52 +95,11 @@ class InotiaPDataIntegrationTest {
                 "restartError=${restartError ?: "none"}\n" +
                 "afterOkError=${afterOkError ?: "none"}\n" +
                 "popupRegionDiff=$popupRegionDiff\n" +
-                "fullFrameDiff=$fullDiff\n"
+                "fullFrameDiff=$fullDiff\n" +
+                "--- data tree after restart with packaged P ---\n$treeAfterRestart\n"
         )
 
         WipiNative.nativeStop()
-    }
-
-    private fun rewritePStateAsSingleStreams(entry: GameEntry, fullZip: ByteArray, namespaces: List<String>): Int {
-        var count = 0
-
-        ZipInputStream(ByteArrayInputStream(fullZip)).use { zip ->
-            while (true) {
-                val item = zip.nextEntry ?: break
-                if (!item.isDirectory) {
-                    val name = item.name.replace('\\', '/').trimStart('/')
-                    val marker = when {
-                        name.startsWith("P/") -> "P/"
-                        name.startsWith("p/") -> "p/"
-                        name.contains("/P/") -> "/P/"
-                        name.contains("/p/") -> "/p/"
-                        else -> null
-                    }
-                    if (marker != null) {
-                        val relative = if (name.startsWith(marker)) {
-                            name.removePrefix(marker)
-                        } else {
-                            name.substringAfter(marker)
-                        }
-                        val isStatePayload = relative.endsWith(".dat", ignoreCase = true) ||
-                            relative.equals("prefs", ignoreCase = true)
-                        if (isStatePayload && !relative.contains("..")) {
-                            val blob = zip.readBytes()
-                            for (namespace in namespaces) {
-                                val dbRoot = File(entry.dataDir, "db/$namespace").apply { mkdirs() }
-                                val dbDir = File(dbRoot, relative).canonicalFile
-                                dbDir.deleteRecursively()
-                                check(dbDir.mkdirs() || dbDir.isDirectory)
-                                File(dbDir, "1").writeBytes(blob)
-                                count++
-                            }
-                        }
-                    }
-                }
-                zip.closeEntry()
-            }
-        }
-        return count
     }
 
     private fun summarizeDataTree(root: File): String {
