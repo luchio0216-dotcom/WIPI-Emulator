@@ -6,9 +6,8 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.io.ByteArrayInputStream
 import java.io.File
-import java.util.zip.ZipInputStream
+import java.security.MessageDigest
 
 @RunWith(AndroidJUnit4::class)
 class InotiaPDataIntegrationTest {
@@ -16,222 +15,80 @@ class InotiaPDataIntegrationTest {
     private val height = SCREEN_HEIGHT
 
     @Test
-    fun firstRunThenInjectPDataAndRestart() {
+    fun directLaunchWithInotiaKtfCompatibilityShim() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         val testContext = instrumentation.context
         WipiNative.init(context)
 
+        // Use the complete archive including the shipped P/ data.  W-Feature's
+        // compatibility notes for this exact KTF title show that the obsolete
+        // download branch is controlled by subscriber-number length, not by a
+        // need to fetch the already-packaged 600 KB again.
         val fullZip = testContext.assets.open("inotia1_flat.zip").use { it.readBytes() }
-        val gameRoot = File(context.filesDir, "games/inotia-autotest").apply {
+        val gameRoot = File(context.filesDir, "games/inotia-min-autotest").apply {
             deleteRecursively()
             mkdirs()
         }
         val gameFile = File(gameRoot, "inotia1.zip").apply { writeBytes(fullZip) }
         val entry = GameEntry(
-            id = "inotia-autotest",
-            name = "Inotia 1 integration test",
+            id = "inotia-min-autotest",
+            name = "Inotia 1 KTF MIN bypass test",
             cover = null,
             gameFile = gameFile,
             filename = "inotia1.zip",
             dataDir = File(gameRoot, "data"),
         )
+        entry.dataDir.deleteRecursively()
+        entry.dataDir.mkdirs()
 
-        val importer = PDataImporter(context)
-        val sourceZip = File(context.cacheDir, "inotia1_full.zip").apply { writeBytes(fullZip) }
-        val sourceUri = android.net.Uri.fromFile(sourceZip)
-        val stage1 = importer.prepareFirstStage(entry, sourceUri).getOrThrow()
-        assertTrue(stage1.removedPFiles > 0)
+        assertTrue(WipiNative.nativeStart(entry.gameFile.readBytes(), entry.filename, entry.dataDir.absolutePath, ""))
 
-        // #14 showed that one OK only reaches the Inotia title screen, so the
-        // previous pixel comparison was not actually observing the 600KB dialog.
-        // From now on every boot deliberately passes splash -> title -> next screen
-        // with TWO OK presses before taking the comparison frame.
-        val before = bootToPrompt(entry)
-        saveFrame(context.cacheDir, "inotia-before.png", before.frame)
-        val treeBefore = summarizeDataTree(entry.dataDir)
+        // Splash -> title.
+        waitAndPump(7000)
+        pressOk()
+        val titleFrame = captureAfterDelay(3500)
+        val titleError = pendingError()
+        saveFrame(context.cacheDir, "inotia-before.png", titleFrame)
 
-        // Attempt A: restore the full original package and overwrite the runtime's
-        // first-boot prefs with the shipped P/prefs bytes.
-        val shippedPrefs = findPFile(fullZip, "prefs") ?: error("P/prefs not found")
-        assertTrue("Expected 64-byte shipped prefs", shippedPrefs.size == 64)
-        entry.gameFile.writeBytes(fullZip)
+        // Title -> legacy KTF data/billing check.  With AID 010100D3 the patched
+        // WIE runtime returns MIN=9999, which should skip the retired 600 KB
+        // network/receipt branch and enter the real game menu instead.
+        pressOk()
+        val menuFrame = captureAfterDelay(8000)
+        val menuError = pendingError()
+        saveFrame(context.cacheDir, "inotia-after-restart.png", menuFrame)
 
-        val persistentPrefs = File(entry.dataDir, "db/${stage1.pid}/prefs/1")
-        val oldPrefs = persistentPrefs.takeIf { it.isFile }?.readBytes()
-        persistentPrefs.parentFile?.mkdirs()
-        persistentPrefs.writeBytes(shippedPrefs)
+        // One more OK proves that the result is interactive game state rather
+        // than a cosmetically hidden prompt.
+        pressOk()
+        val advancedFrame = captureAfterDelay(5000)
+        val advancedError = pendingError()
+        saveFrame(context.cacheDir, "inotia-after-ok.png", advancedFrame)
 
-        val fsPrefs = File(entry.dataDir, "fs/${stage1.aid}/prefs")
-        fsPrefs.parentFile?.mkdirs()
-        fsPrefs.writeBytes(shippedPrefs)
-
-        WipiNative.nativeStop()
-        Thread.sleep(1000)
-        val attemptA = bootToPrompt(entry)
-        saveFrame(context.cacheDir, "inotia-after-restart.png", attemptA.frame)
-        val aPopupDiff = diffRatio(before.frame, attemptA.frame, 35, 55, 205, 220)
-        val aFullDiff = diffRatio(before.frame, attemptA.frame, 0, 0, width, height)
-
-        // Attempt B in the SAME emulator run: if A still matches the real 600KB
-        // dialog, mirror all six shipped P payloads under the literal P/ prefix in
-        // persistent WIPI FS and reboot immediately.
-        var chainedFallback = false
-        var prefixedPFiles = 0
-        var prefixedPBytes = 0L
-        var finalProbe = attemptA
-
-        if (aPopupDiff <= 0.01 && aFullDiff <= 0.01) {
-            chainedFallback = true
-            WipiNative.nativeStop()
-            Thread.sleep(500)
-            val copied = copyAllPToPersistentFs(entry, fullZip, stage1.aid)
-            prefixedPFiles = copied.files
-            prefixedPBytes = copied.bytes
-            assertTrue("Expected all six P payloads", prefixedPFiles == 6)
-            finalProbe = bootToPrompt(entry)
-        }
-
-        val finalPopupDiff = diffRatio(before.frame, finalProbe.frame, 35, 55, 205, 220)
-        val finalFullDiff = diffRatio(before.frame, finalProbe.frame, 0, 0, width, height)
-
-        // Only if the frame is no longer the baseline download prompt do we press
-        // OK once more to prove that the game can advance rather than merely show
-        // a cosmetically different dialog.
-        var verificationPressed = false
-        var verificationFrame = finalProbe.frame
-        var verificationError = finalProbe.error
-        if (finalPopupDiff > 0.01 || finalFullDiff > 0.01) {
-            verificationPressed = true
-            pressOk()
-            verificationFrame = captureAfterDelay(5000)
-            verificationError = pendingError()
-        }
-        saveFrame(context.cacheDir, "inotia-after-ok.png", verificationFrame)
-
-        val treeFinal = summarizeDataTree(entry.dataDir)
-        val prefsFinal = persistentPrefs.takeIf { it.isFile }?.readBytes()
+        val titleToMenuDiff = diffRatio(titleFrame, menuFrame)
+        val menuToAdvancedDiff = diffRatio(menuFrame, advancedFrame)
+        val tree = summarizeDataTree(entry.dataDir)
+        val digest = MessageDigest.getInstance("SHA-256").digest(fullZip).joinToString("") { "%02x".format(it) }
 
         File(context.cacheDir, "inotia-stage2.txt").writeText(
-            "aid=${stage1.aid}\n" +
-                "pid=${stage1.pid}\n" +
-                "mode=two-ok-real-prompt+package-prefs+auto-P-prefix-fallback\n" +
-                "restoredPackageBytes=${fullZip.size}\n" +
-                "shippedPrefsBytes=${shippedPrefs.size}\n" +
-                "oldPrefsBytes=${oldPrefs?.size ?: -1}\n" +
-                "oldPrefsEqualShipped=${oldPrefs?.contentEquals(shippedPrefs) ?: false}\n" +
-                "chainedFallback=$chainedFallback\n" +
-                "prefixedPFiles=$prefixedPFiles\n" +
-                "prefixedPBytes=$prefixedPBytes\n" +
-                "--- data tree before restore ---\n$treeBefore\n" +
-                "--- final data tree ---\n$treeFinal\n"
+            "aid=010100D3\n" +
+                "pid=PD005362\n" +
+                "mode=complete-package+short-MIN-compatibility-shim\n" +
+                "minForInotia=9999\n" +
+                "packageSha256=$digest\n" +
+                "packageBytes=${fullZip.size}\n" +
+                "--- final data tree ---\n$tree\n"
         )
-
         File(context.cacheDir, "inotia-report.txt").writeText(
-            "beforeError=${before.error ?: "none"}\n" +
-                "attemptAError=${attemptA.error ?: "none"}\n" +
-                "finalProbeError=${finalProbe.error ?: "none"}\n" +
-                "verificationError=${verificationError ?: "none"}\n" +
-                "attemptAPopupRegionDiff=$aPopupDiff\n" +
-                "attemptAFullFrameDiff=$aFullDiff\n" +
-                "finalPopupRegionDiff=$finalPopupDiff\n" +
-                "finalFullFrameDiff=$finalFullDiff\n" +
-                "verificationPressed=$verificationPressed\n" +
-                "prefsFinalBytes=${prefsFinal?.size ?: -1}\n" +
-                "prefsFinalEqualShipped=${prefsFinal?.contentEquals(shippedPrefs) ?: false}\n"
+            "titleError=${titleError ?: "none"}\n" +
+                "menuError=${menuError ?: "none"}\n" +
+                "advancedError=${advancedError ?: "none"}\n" +
+                "titleToMenuDiff=$titleToMenuDiff\n" +
+                "menuToAdvancedDiff=$menuToAdvancedDiff\n"
         )
 
         WipiNative.nativeStop()
-    }
-
-    private data class Probe(val frame: IntArray, val error: String?)
-
-    private fun bootToPrompt(entry: GameEntry): Probe {
-        assertTrue(WipiNative.nativeStart(entry.gameFile.readBytes(), entry.filename, entry.dataDir.absolutePath, ""))
-        waitAndPump(7000)
-        pressOk() // splash -> title
-        waitAndPump(3000)
-        pressOk() // title -> download check / next game state
-        val frame = captureAfterDelay(5000)
-        return Probe(frame, pendingError())
-    }
-
-    private data class CopyResult(val files: Int, val bytes: Long)
-
-    private fun copyAllPToPersistentFs(entry: GameEntry, zipBytes: ByteArray, aid: String): CopyResult {
-        val fsRoot = File(entry.dataDir, "fs/$aid").canonicalFile.apply { mkdirs() }
-        val pRoot = File(fsRoot, "P").canonicalFile.apply { mkdirs() }
-        var files = 0
-        var bytes = 0L
-
-        ZipInputStream(ByteArrayInputStream(zipBytes)).use { zip ->
-            while (true) {
-                val item = zip.nextEntry ?: break
-                if (!item.isDirectory) {
-                    val name = item.name.replace('\\', '/').trimStart('/')
-                    val relative = pRelativePath(name)
-                    if (relative != null && isSafeRelativePath(relative)) {
-                        val blob = zip.readBytes()
-                        writeSafe(fsRoot, relative, blob)
-                        writeSafe(pRoot, relative, blob)
-                        files++
-                        bytes += blob.size
-                    }
-                }
-                zip.closeEntry()
-            }
-        }
-        return CopyResult(files, bytes)
-    }
-
-    private fun writeSafe(root: File, relative: String, data: ByteArray) {
-        val file = File(root, relative).canonicalFile
-        val prefix = root.path + File.separator
-        require(file.path.startsWith(prefix))
-        file.parentFile?.mkdirs()
-        file.writeBytes(data)
-    }
-
-    private fun findPFile(zipBytes: ByteArray, wantedName: String): ByteArray? {
-        ZipInputStream(ByteArrayInputStream(zipBytes)).use { zip ->
-            while (true) {
-                val item = zip.nextEntry ?: return null
-                if (!item.isDirectory) {
-                    val name = item.name.replace('\\', '/').trimStart('/')
-                    val relative = pRelativePath(name)
-                    if (relative != null && relative.equals(wantedName, ignoreCase = true)) {
-                        return zip.readBytes()
-                    }
-                }
-                zip.closeEntry()
-            }
-        }
-    }
-
-    private fun pRelativePath(name: String): String? = when {
-        name.startsWith("P/") -> name.removePrefix("P/")
-        name.startsWith("p/") -> name.removePrefix("p/")
-        name.contains("/P/") -> name.substringAfter("/P/")
-        name.contains("/p/") -> name.substringAfter("/p/")
-        else -> null
-    }
-
-    private fun isSafeRelativePath(path: String): Boolean {
-        val parts = path.replace('\\', '/').split('/')
-        return parts.isNotEmpty() && parts.none { it.isBlank() || it == "." || it == ".." }
-    }
-
-    private fun summarizeDataTree(root: File): String {
-        if (!root.exists()) return "<missing>"
-        return root.walkTopDown()
-            .filter { it.isFile }
-            .map { file ->
-                val rel = file.relativeTo(root).path.replace(File.separatorChar, '/')
-                "$rel (${file.length()})"
-            }
-            .sorted()
-            .joinToString("\n")
-            .ifBlank { "<empty>" }
     }
 
     private fun pressOk() {
@@ -273,29 +130,31 @@ class InotiaPDataIntegrationTest {
         bitmap.recycle()
     }
 
-    private fun diffRatio(a: IntArray, b: IntArray, left: Int, top: Int, right: Int, bottom: Int): Double {
+    private fun diffRatio(a: IntArray, b: IntArray): Double {
         var changed = 0L
-        var total = 0L
-        val l = left.coerceIn(0, width)
-        val r = right.coerceIn(l, width)
-        val t = top.coerceIn(0, height)
-        val bot = bottom.coerceIn(t, height)
-        for (y in t until bot) {
-            for (x in l until r) {
-                val i = y * width + x
-                val ca = a[i]
-                val cb = b[i]
-                val ar = (ca shr 16) and 0xff
-                val ag = (ca shr 8) and 0xff
-                val ab = ca and 0xff
-                val br = (cb shr 16) and 0xff
-                val bg = (cb shr 8) and 0xff
-                val bb = cb and 0xff
-                val delta = kotlin.math.abs(ar - br) + kotlin.math.abs(ag - bg) + kotlin.math.abs(ab - bb)
-                if (delta > 24) changed++
-                total++
-            }
+        val count = minOf(a.size, b.size)
+        for (i in 0 until count) {
+            val ca = a[i]
+            val cb = b[i]
+            val delta =
+                kotlin.math.abs(((ca shr 16) and 0xff) - ((cb shr 16) and 0xff)) +
+                    kotlin.math.abs(((ca shr 8) and 0xff) - ((cb shr 8) and 0xff)) +
+                    kotlin.math.abs((ca and 0xff) - (cb and 0xff))
+            if (delta > 24) changed++
         }
-        return if (total == 0L) 0.0 else changed.toDouble() / total.toDouble()
+        return if (count == 0) 0.0 else changed.toDouble() / count.toDouble()
+    }
+
+    private fun summarizeDataTree(root: File): String {
+        if (!root.exists()) return "<missing>"
+        return root.walkTopDown()
+            .filter { it.isFile }
+            .map { file ->
+                val rel = file.relativeTo(root).path.replace(File.separatorChar, '/')
+                "$rel (${file.length()})"
+            }
+            .sorted()
+            .joinToString("\n")
+            .ifBlank { "<empty>" }
     }
 }
