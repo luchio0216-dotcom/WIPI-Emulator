@@ -7,7 +7,9 @@ import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.ByteArrayInputStream
 import java.io.File
+import java.util.zip.ZipInputStream
 
 @RunWith(AndroidJUnit4::class)
 class InotiaPDataIntegrationTest {
@@ -43,9 +45,9 @@ class InotiaPDataIntegrationTest {
         val stage1 = importer.prepareFirstStage(entry, sourceUri).getOrThrow()
         assertTrue(stage1.removedPFiles > 0)
 
-        // First run with P/ physically removed from the package. This reproduces
-        // the legacy handset procedure up to the 600KB download prompt and lets
-        // the runtime create its own persistent prefs/install state first.
+        // First boot with P/ removed, matching the original handset sequence up
+        // to the 600KB download prompt. This deliberately lets the game create
+        // its own default persistent prefs record before the second-stage copy.
         assertTrue(WipiNative.nativeStart(entry.gameFile.readBytes(), entry.filename, entry.dataDir.absolutePath, ""))
         waitAndPump(7000)
         pressOk()
@@ -54,21 +56,37 @@ class InotiaPDataIntegrationTest {
         val beforeError = pendingError()
         val treeBefore = summarizeDataTree(entry.dataDir)
 
-        // V8 experiment: stop guessing the persistent DB representation. The
-        // pinned WIE KTF runtime has a packaged-database path that resolves P/<db>
-        // resources from the installed game package. Restore the ORIGINAL full
-        // package (including P/) after the first-run prompt while keeping dataDir
-        // untouched, then restart. This mirrors the old phone instruction of
-        // copying P back without deleting the install/prefs state.
+        // V9 experiment: #12 proved that merely restoring the full package with
+        // P/ is not enough. The reason may be that the first boot already created
+        // db/<PID>/prefs/1; WIE then prefers that existing record over packaged
+        // P/prefs. Restore the original full package AND explicitly overwrite the
+        // persistent prefs record with the shipped P/prefs bytes. Keep the same
+        // bytes visible through the WIPI filesystem as well. With packaged P/
+        // present, a CREATE-mode DB open should no longer wipe this replacement.
+        val shippedPrefs = findPFile(fullZip, "prefs") ?: error("P/prefs not found")
+        assertTrue("Expected 64-byte shipped prefs", shippedPrefs.size == 64)
         entry.gameFile.writeBytes(fullZip)
-        val treeAfterPackageRestore = summarizeDataTree(entry.dataDir)
+
+        val persistentPrefs = File(entry.dataDir, "db/${stage1.pid}/prefs/1")
+        val oldPrefs = persistentPrefs.takeIf { it.isFile }?.readBytes()
+        persistentPrefs.parentFile?.mkdirs()
+        persistentPrefs.writeBytes(shippedPrefs)
+
+        val fsPrefs = File(entry.dataDir, "fs/${stage1.aid}/prefs")
+        fsPrefs.parentFile?.mkdirs()
+        fsPrefs.writeBytes(shippedPrefs)
+
+        val treeAfterRestore = summarizeDataTree(entry.dataDir)
         File(context.cacheDir, "inotia-stage2.txt").writeText(
             "aid=${stage1.aid}\n" +
                 "pid=${stage1.pid}\n" +
-                "mode=restore-original-package-with-P\n" +
+                "mode=restore-full-package-plus-shipped-prefs-overwrite\n" +
                 "restoredPackageBytes=${fullZip.size}\n" +
-                "--- data tree before package restore ---\n$treeBefore\n" +
-                "--- data tree immediately after package restore ---\n$treeAfterPackageRestore\n"
+                "shippedPrefsBytes=${shippedPrefs.size}\n" +
+                "oldPrefsBytes=${oldPrefs?.size ?: -1}\n" +
+                "oldPrefsEqualShipped=${oldPrefs?.contentEquals(shippedPrefs) ?: false}\n" +
+                "--- data tree before restore ---\n$treeBefore\n" +
+                "--- data tree after package+prefs restore ---\n$treeAfterRestore\n"
         )
 
         WipiNative.nativeStop()
@@ -81,6 +99,7 @@ class InotiaPDataIntegrationTest {
         saveFrame(context.cacheDir, "inotia-after-restart.png", afterRestart)
         val restartError = pendingError()
         val treeAfterRestart = summarizeDataTree(entry.dataDir)
+        val prefsAfterRestart = persistentPrefs.takeIf { it.isFile }?.readBytes()
 
         val popupRegionDiff = diffRatio(before, afterRestart, 35, 55, 205, 230)
         val fullDiff = diffRatio(before, afterRestart, 0, 0, width, height)
@@ -96,10 +115,34 @@ class InotiaPDataIntegrationTest {
                 "afterOkError=${afterOkError ?: "none"}\n" +
                 "popupRegionDiff=$popupRegionDiff\n" +
                 "fullFrameDiff=$fullDiff\n" +
-                "--- data tree after restart with packaged P ---\n$treeAfterRestart\n"
+                "prefsAfterRestartBytes=${prefsAfterRestart?.size ?: -1}\n" +
+                "prefsAfterRestartEqualShipped=${prefsAfterRestart?.contentEquals(shippedPrefs) ?: false}\n" +
+                "--- data tree after restart ---\n$treeAfterRestart\n"
         )
 
         WipiNative.nativeStop()
+    }
+
+    private fun findPFile(zipBytes: ByteArray, wantedName: String): ByteArray? {
+        ZipInputStream(ByteArrayInputStream(zipBytes)).use { zip ->
+            while (true) {
+                val item = zip.nextEntry ?: return null
+                if (!item.isDirectory) {
+                    val name = item.name.replace('\\', '/').trimStart('/')
+                    val relative = when {
+                        name.startsWith("P/") -> name.removePrefix("P/")
+                        name.startsWith("p/") -> name.removePrefix("p/")
+                        name.contains("/P/") -> name.substringAfter("/P/")
+                        name.contains("/p/") -> name.substringAfter("/p/")
+                        else -> null
+                    }
+                    if (relative != null && relative.equals(wantedName, ignoreCase = true)) {
+                        return zip.readBytes()
+                    }
+                }
+                zip.closeEntry()
+            }
+        }
     }
 
     private fun summarizeDataTree(root: File): String {
