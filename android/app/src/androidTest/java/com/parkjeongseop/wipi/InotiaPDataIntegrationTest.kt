@@ -53,7 +53,7 @@ class InotiaPDataIntegrationTest {
             "aid=${stage2.aid}\n" +
                 "pid=${stage2.pid}\n" +
                 "pFiles=${stage2.fileCount}\n" +
-                "dbFiles=${stage2.databaseCount}\n" +
+                "dbFiles=${stage2.databaseFileCount}\n" +
                 "dbRecords=${stage2.databaseRecordCount}\n" +
                 "bytes=${stage2.totalBytes}\n"
         )
