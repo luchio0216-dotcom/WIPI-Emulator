@@ -21,8 +21,6 @@ class InotiaPDataIntegrationTest {
         val testContext = instrumentation.context
         WipiNative.init(context)
 
-        // inotia1_flat.zip is packaged with the androidTest APK, so read it from
-        // the instrumentation context rather than the target application context.
         val fullZip = testContext.assets.open("inotia1_flat.zip").use { it.readBytes() }
         val sourceZip = File(context.cacheDir, "inotia1_full.zip").apply { writeBytes(fullZip) }
 
@@ -45,13 +43,17 @@ class InotiaPDataIntegrationTest {
         val stage1 = importer.prepareFirstStage(entry, sourceUri).getOrThrow()
         assertTrue(stage1.removedPFiles > 0)
 
-        // Boot the stripped package and leave the 600KB dialog alive, matching the handset procedure.
+        // The Com2uS splash remains visible for several seconds on the virtual device.
+        // Advance once after the splash and then wait long enough for the legacy 600KB
+        // prompt to appear before taking the baseline frame.
         assertTrue(WipiNative.nativeStart(entry.gameFile.readBytes(), entry.filename, entry.dataDir.absolutePath, ""))
-        val before = captureAfterDelay(6500)
+        waitAndPump(7000)
+        pressOk()
+        val before = captureAfterDelay(8000)
         saveFrame(context.cacheDir, "inotia-before.png", before)
         val beforeError = pendingError()
 
-        // Inject the real P data while that first emulator session is still running.
+        // Inject the real P data while that first emulator session is still alive.
         val stage2 = importer.importZip(entry, sourceUri).getOrThrow()
         File(context.cacheDir, "inotia-stage2.txt").writeText(
             "aid=${stage2.aid}\n" +
@@ -63,23 +65,24 @@ class InotiaPDataIntegrationTest {
         )
 
         WipiNative.nativeStop()
-        Thread.sleep(800)
+        Thread.sleep(1000)
 
-        // Reboot with the same stripped package. If sideloading is correct, the prompt should disappear.
+        // Repeat the exact same startup sequence after sideloading. If sideloading is
+        // correct, this frame should no longer contain the 600KB prompt.
         assertTrue(WipiNative.nativeStart(entry.gameFile.readBytes(), entry.filename, entry.dataDir.absolutePath, ""))
-        val afterRestart = captureAfterDelay(6500)
+        waitAndPump(7000)
+        pressOk()
+        val afterRestart = captureAfterDelay(8000)
         saveFrame(context.cacheDir, "inotia-after-restart.png", afterRestart)
         val restartError = pendingError()
 
         val popupRegionDiff = diffRatio(before, afterRestart, 35, 55, 205, 230)
         val fullDiff = diffRatio(before, afterRestart, 0, 0, width, height)
 
-        // Also press OK once and capture the result. A lingering download prompt normally turns into
-        // the old connection-failed dialog; a successful install should advance into the game.
-        WipiNative.nativeKeyDown("OK")
-        Thread.sleep(120)
-        WipiNative.nativeKeyUp("OK")
-        val afterOk = captureAfterDelay(3000)
+        // One more OK distinguishes a surviving download prompt (network attempt / error)
+        // from a successful install (advance from title into the game/menu).
+        pressOk()
+        val afterOk = captureAfterDelay(5000)
         saveFrame(context.cacheDir, "inotia-after-ok.png", afterOk)
         val afterOkError = pendingError()
 
@@ -94,13 +97,28 @@ class InotiaPDataIntegrationTest {
         WipiNative.nativeStop()
     }
 
+    private fun pressOk() {
+        WipiNative.nativeKeyDown("OK")
+        Thread.sleep(150)
+        WipiNative.nativeKeyUp("OK")
+    }
+
+    private fun waitAndPump(delayMs: Long) {
+        val deadline = System.currentTimeMillis() + delayMs
+        val frame = IntArray(width * height)
+        while (System.currentTimeMillis() < deadline) {
+            WipiNative.nativeGetFrame(frame)
+            Thread.sleep(40)
+        }
+    }
+
     private fun pendingError(): String? {
         val kind = IntArray(1)
         return WipiNative.nativeGetError(kind)?.let { "kind=${kind[0]} $it" }
     }
 
     private fun captureAfterDelay(delayMs: Long): IntArray {
-        Thread.sleep(delayMs)
+        waitAndPump(delayMs)
         val frame = IntArray(width * height)
         var sawFrame = false
         repeat(100) {
