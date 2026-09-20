@@ -87,8 +87,8 @@ jobs:
           script: |
             set -e
             gradle -p android :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace
-            APP_APK=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -n1)
-            TEST_APK=$(find android/app/build/outputs/apk/androidTest/debug -name '*.apk' | head -n1)
+            APP_APK=$(find android/app/build/outputs/apk/debug -type f -name '*.apk' | head -n1)\n            [ -n \"$APP_APK\" ] || APP_APK=$(find android/app/build/outputs/apk -type f -name '*.apk' ! -path '*/androidTest/*' | head -n1)\n            echo \"APP_APK=$APP_APK\"\n            [ -f \"$APP_APK\" ]
+            TEST_APK=$(find android/app/build/outputs/apk/androidTest/debug -type f -name '*.apk' | head -n1)\n            [ -n \"$TEST_APK\" ] || TEST_APK=$(find android/app/build/outputs/apk -type f -name '*.apk' -path '*/androidTest/*' | head -n1)\n            echo \"TEST_APK=$TEST_APK\"\n            [ -f \"$TEST_APK\" ]
             adb install -r "$APP_APK"
             adb install -r "$TEST_APK"
             set +e
