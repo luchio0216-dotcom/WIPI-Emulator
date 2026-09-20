@@ -95,7 +95,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
           script: |
-            set -euo pipefail
+            set -eu
             gradle -p android :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace
             APP_APK="$(find "$PWD/android/app/build/outputs/apk" -type f -name '*.apk' ! -path '*/androidTest/*' -print -quit)"
             TEST_APK="$(find "$PWD/android/app/build/outputs/apk" -type f -name '*.apk' -path '*/androidTest/*' -print -quit)"
@@ -108,21 +108,21 @@ jobs:
             adb logcat -c || true
 
             run_test() {
-              local method="$1"
-              local output="$2"
+              method="$1"
+              output="$2"
               set +e
               adb shell am instrument -w -r \
                 -e class "com.parkjeongseop.wipi.InotiaSaveOverwriteExploreTest#$method" \
                 com.parkjeongseop.wipi.pdata4.test/androidx.test.runner.AndroidJUnitRunner \
                 > "$output" 2>&1
-              local rc=$?
+              rc=$?
               set -e
               cat "$output"
               if [ "$rc" -ne 0 ]; then
                 echo "Instrumentation command failed with rc=$rc"
                 return 1
               fi
-              if grep -Eq 'FAILURES!!!|INSTRUMENTATION_CODE: -1|INSTRUMENTATION_STATUS_CODE: -2' "$output"; then
+              if grep -Eq 'FAILURES!!!|INSTRUMENTATION_STATUS_CODE: -2' "$output"; then
                 echo "Instrumentation reported a test failure"
                 return 1
               fi
