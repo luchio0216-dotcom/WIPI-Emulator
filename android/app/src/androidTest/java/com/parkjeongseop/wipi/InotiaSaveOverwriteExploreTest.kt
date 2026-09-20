@@ -35,13 +35,18 @@ class InotiaSaveOverwriteExploreTest {
         waitAndPump(6000); press("OK")
         waitAndPump(8000)
 
-        // Confirm the default character, then use the game's on-screen # SKIP control.
-        // The previous test kept pressing OK and was still inside the intro when it
-        // attempted to open the System menu, which produced a false-positive green run.
+        // The prior evidence proved we were still on the stat-decision screen here.
+        // Re-roll a few times, confirm the displayed stats, accept the default name,
+        // then use the intro's visible # SKIP soft control to reach actual gameplay.
+        repeat(5) { press("RIGHT") }
+        waitAndPump(1200)
         press("OK")
-        waitAndPump(2500)
+        waitAndPump(1800)
+        press("OK")
+        waitAndPump(3500)
         press("#")
-        waitAndPump(8000)
+        waitAndPump(9000)
+
         val gameplay = captureAfterDelay(3000)
         saveFrame(context.cacheDir, "inotia-save-gameplay.png", gameplay)
 
