@@ -51,7 +51,6 @@ class InotiaUserWfsSlot1PersistenceTest {
         frame(context.cacheDir, "user-wfs-imported-slot1-gameplay.png", gameplay)
         assertTrue("existing SLOT 1 did not load: ${error()}", error() == null)
 
-        // Change actual play state before saving so an overwrite must update save0.dat bytes.
         repeat(3) { press("RIGHT") }
         repeat(2) { press("DOWN") }
         waitPump(1500)
@@ -78,8 +77,6 @@ class InotiaUserWfsSlot1PersistenceTest {
         )
         File(context.filesDir, "inotia-force-stop-ready.flag").writeText(committedSha)
         println("INOTIA_USER_WFS_PHASE1_READY imported=$importedSha committed=$committedSha bytes=${saveFile.length()} rebound=$fixtureIdentityRebound")
-
-        // Do NOT stop the emulator here. CI must externally force-stop the live target process.
         while (true) Thread.sleep(1000)
     }
 
@@ -89,7 +86,6 @@ class InotiaUserWfsSlot1PersistenceTest {
         val context = inst.targetContext
         val testContext = inst.context
         WipiNative.init(context)
-
         val archive = testContext.assets.open("inotia1_flat.zip").use { it.readBytes() }
         val entry = entry(context.filesDir, archive, reset = false)
         val saveFile = File(entry.dataDir, "db/PD005362/save0.dat/1")
@@ -100,7 +96,6 @@ class InotiaUserWfsSlot1PersistenceTest {
         assertTrue("save0.dat missing after process death", saveFile.isFile && saveFile.length() > 0)
         assertTrue("prefs missing after process death", prefsFile.isFile && prefsFile.length() > 0)
         assertEquals("save0.dat changed across process death", expectedCommittedSha, sha(saveFile.readBytes()))
-
         assertTrue(WipiNative.nativeStart(archive, entry.filename, entry.dataDir.absolutePath, ""))
         continueSlot1()
         val reloaded = capture(6000)
@@ -108,15 +103,8 @@ class InotiaUserWfsSlot1PersistenceTest {
         val reloadError = error()
         assertTrue("persisted SLOT 1 failed to reload after force-stop: ${reloadError ?: "none"}", reloadError == null)
         assertEquals("save0.dat changed during reload", expectedCommittedSha, sha(saveFile.readBytes()))
-
         File(context.cacheDir, "user-wfs-final-report.txt").writeText(
-            "committedSaveSha256=$expectedCommittedSha\n" +
-                "persistedSaveSha256=${sha(saveFile.readBytes())}\n" +
-                "saveBytes=${saveFile.length()}\n" +
-                "prefsBytes=${prefsFile.length()}\n" +
-                "forceStopPersistence=true\n" +
-                "slot1ReloadSucceeded=true\n" +
-                "reloadError=${reloadError ?: "none"}\n"
+            "committedSaveSha256=$expectedCommittedSha\npersistedSaveSha256=${sha(saveFile.readBytes())}\nsaveBytes=${saveFile.length()}\nprefsBytes=${prefsFile.length()}\nforceStopPersistence=true\nslot1ReloadSucceeded=true\nreloadError=${reloadError ?: "none"}\n"
         )
         println("INOTIA_USER_WFS_PERSISTENCE_OK sha=$expectedCommittedSha bytes=${saveFile.length()}")
         WipiNative.nativeStop()
@@ -128,88 +116,33 @@ class InotiaUserWfsSlot1PersistenceTest {
         root.mkdirs()
         val gameFile = File(root, "inotia1.zip")
         if (!gameFile.isFile || reset) gameFile.writeBytes(archive)
-        return GameEntry(gameId, "Inotia user WFS slot 1", null, gameFile, "inotia1.zip", File(root, "data")).also {
-            it.dataDir.mkdirs()
-        }
+        return GameEntry(gameId, "Inotia user WFS slot 1", null, gameFile, "inotia1.zip", File(root, "data")).also { it.dataDir.mkdirs() }
     }
 
     private fun continueSlot1() {
-        waitPump(7000); press("OK")
-        waitPump(3500); press("OK")
-        waitPump(8000); press("OK")
-        waitPump(5000); press("OK")
-        waitPump(6000); press("OK")
-        waitPump(8000)
+        waitPump(7000); press("OK"); waitPump(3500); press("OK"); waitPump(8000); press("OK"); waitPump(5000); press("OK"); waitPump(6000); press("OK"); waitPump(8000)
     }
 
     private fun saveFromGameplay(dir: File) {
-        press("SOFT_L")
+        // Inotia KTF: left soft key opens the minimap. The system/menu entry is the right soft key.
+        press("SOFT_R")
         frame(dir, "user-wfs-menu-open.png", capture(1200))
-
         repeat(5) { press("RIGHT") }
         frame(dir, "user-wfs-system-tab.png", capture(900))
-
         press("OK")
         frame(dir, "user-wfs-system-list.png", capture(1200))
-
         press("OK")
         frame(dir, "user-wfs-save-selected.png", capture(1400))
-
         press("OK")
         frame(dir, "user-wfs-save-after-confirm.png", capture(2200))
     }
 
-    private fun press(key: String) {
-        WipiNative.nativeKeyDown(key); Thread.sleep(150); WipiNative.nativeKeyUp(key); Thread.sleep(300)
-    }
-
-    private fun waitPump(ms: Long) {
-        val until = System.currentTimeMillis() + ms
-        val pixels = IntArray(width * height)
-        while (System.currentTimeMillis() < until) {
-            WipiNative.nativeGetFrame(pixels)
-            Thread.sleep(40)
-        }
-    }
-
-    private fun capture(ms: Long): IntArray {
-        waitPump(ms)
-        val pixels = IntArray(width * height)
-        var saw = false
-        repeat(100) {
-            if (WipiNative.nativeGetFrame(pixels)) saw = true
-            Thread.sleep(20)
-        }
-        assertTrue("no emulator frame", saw)
-        return pixels.copyOf()
-    }
-
-    private fun error(): String? {
-        val kind = IntArray(1)
-        return WipiNative.nativeGetError(kind)?.let { "kind=${kind[0]} $it" }
-    }
-
-    private fun frame(dir: File, name: String, pixels: IntArray) {
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
-        File(dir, name).outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        bitmap.recycle()
-    }
-
-    private fun rebindFixtureIdentity(wfs: ByteArray, archive: ByteArray): ByteArray {
-        assertTrue("fixture WFS header too short", wfs.size >= 50)
-        assertTrue(
-            "fixture WFS magic mismatch",
-            wfs.copyOfRange(0, 8).contentEquals("WFSAVEBK".toByteArray(Charsets.US_ASCII)),
-        )
-        val expected = shaBytes(archive)
-        if (wfs.copyOfRange(10, 42).contentEquals(expected)) return wfs
-        return wfs.copyOf().also { expected.copyInto(it, destinationOffset = 10) }
-    }
-
-    private fun shaBytes(bytes: ByteArray): ByteArray =
-        MessageDigest.getInstance("SHA-256").digest(bytes)
-
-    private fun sha(bytes: ByteArray): String =
-        shaBytes(bytes).joinToString("") { "%02x".format(it) }
+    private fun press(key: String) { WipiNative.nativeKeyDown(key); Thread.sleep(150); WipiNative.nativeKeyUp(key); Thread.sleep(300) }
+    private fun waitPump(ms: Long) { val until = System.currentTimeMillis() + ms; val pixels = IntArray(width * height); while (System.currentTimeMillis() < until) { WipiNative.nativeGetFrame(pixels); Thread.sleep(40) } }
+    private fun capture(ms: Long): IntArray { waitPump(ms); val pixels = IntArray(width * height); var saw = false; repeat(100) { if (WipiNative.nativeGetFrame(pixels)) saw = true; Thread.sleep(20) }; assertTrue("no emulator frame", saw); return pixels.copyOf() }
+    private fun error(): String? { val kind = IntArray(1); return WipiNative.nativeGetError(kind)?.let { "kind=${kind[0]} $it" } }
+    private fun frame(dir: File, name: String, pixels: IntArray) { val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888); bitmap.setPixels(pixels, 0, width, 0, 0, width, height); File(dir, name).outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }; bitmap.recycle() }
+    private fun rebindFixtureIdentity(wfs: ByteArray, archive: ByteArray): ByteArray { assertTrue("fixture WFS header too short", wfs.size >= 50); assertTrue("fixture WFS magic mismatch", wfs.copyOfRange(0, 8).contentEquals("WFSAVEBK".toByteArray(Charsets.US_ASCII))); val expected = shaBytes(archive); if (wfs.copyOfRange(10, 42).contentEquals(expected)) return wfs; return wfs.copyOf().also { expected.copyInto(it, destinationOffset = 10) } }
+    private fun shaBytes(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
+    private fun sha(bytes: ByteArray): String = shaBytes(bytes).joinToString("") { "%02x".format(it) }
 }
