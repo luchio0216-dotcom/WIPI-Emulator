@@ -105,15 +105,17 @@ pub async fn list_record_or_rename_ktf(
         return Ok(-22);
     }}
 
-    let source_exists = system.platform().database_repository().exists(&old_name, &pid).await;
-    let source_data = if source_exists {{
-        let db = system.platform().database_repository().open(&old_name, &pid).await;
-        db.get(1).await
-    }} else {{
-        read_packaged_database(context, &old_name).await?
-    }};
-    let Some(data) = source_data else {{
-        tracing::warn!("MC_fsRename source missing: {{old_name:?}}");
+    // The overwrite source is the mutable temporary stream just written by
+    // Inotia. Do not fall back to packaged P data here: besides being the wrong
+    // KTF semantic, doing so requires a second mutable context borrow while the
+    // repository is borrowed. A missing temp store is therefore a real error.
+    if !system.platform().database_repository().exists(&old_name, &pid).await {{
+        tracing::warn!("MC_fsRename mutable source missing: {{old_name:?}}");
+        return Ok(-12);
+    }}
+    let db = system.platform().database_repository().open(&old_name, &pid).await;
+    let Some(data) = db.get(1).await else {{
+        tracing::warn!("MC_fsRename source record missing: {{old_name:?}}");
         return Ok(-12);
     }};
 
@@ -122,9 +124,7 @@ pub async fn list_record_or_rename_ktf(
         system.platform().database_repository().delete(&new_name, &pid).await;
         return Ok(-22);
     }}
-    if source_exists {{
-        system.platform().database_repository().delete(&old_name, &pid).await;
-    }}
+    system.platform().database_repository().delete(&old_name, &pid).await;
 
     tracing::info!("MC_fsRename {{old_name:?}} -> {{new_name:?}} complete ({{}} bytes)", data.len());
     Ok(0)
@@ -143,12 +143,12 @@ for root in roots:
         changed = False
         if new_delete not in text:
             if old_delete not in text:
-                raise SystemExit(f"Expected Inotia name-keyed delete shim not found in {{path}}")
+                raise SystemExit(f"Expected Inotia name-keyed delete shim not found in {path}")
             text = text.replace(old_delete, new_delete, 1)
             changed = True
         if rename_function not in text:
             if rename_insert_marker not in text:
-                raise SystemExit(f"Rename insertion point not found in {{path}}")
+                raise SystemExit(f"Rename insertion point not found in {path}")
             text = text.replace(rename_insert_marker, rename_function + rename_insert_marker, 1)
             changed = True
         if changed:
@@ -165,7 +165,7 @@ for root in roots:
             path.write_text(text.replace(method_old, method_new, 1))
             patched.append(path)
         else:
-            raise SystemExit(f"KTF slot 7 mapping not found in {{path}}")
+            raise SystemExit(f"KTF slot 7 mapping not found in {path}")
 
 if not patched and not already:
     raise SystemExit("No WIE save-overwrite targets found")
