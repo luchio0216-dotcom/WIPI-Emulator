@@ -5,8 +5,34 @@ ROOT="$PWD"
 RESULT_DIR="$ROOT/inotia-save-result"
 mkdir -p "$RESULT_DIR"
 
+collect_evidence_files() {
+  local f
+  for f in \
+    user-wfs-imported-slot1-gameplay.png \
+    user-wfs-menu-open.png \
+    user-wfs-system-tab.png \
+    user-wfs-system-list.png \
+    user-wfs-save-selected.png \
+    user-wfs-save-after-confirm.png \
+    user-wfs-overwrite-result.png \
+    user-wfs-reloaded-slot1-gameplay.png \
+    user-wfs-final-report.txt; do
+    adb exec-out run-as "$PKG" cat "cache/$f" > "$RESULT_DIR/$f" 2>/dev/null || true
+    if [ -f "$RESULT_DIR/$f" ] && [ "$(wc -c < "$RESULT_DIR/$f")" -lt 100 ]; then
+      rm -f "$RESULT_DIR/$f"
+    fi
+  done
+  adb exec-out run-as "$PKG" cat files/inotia-user-slot1-phase1.txt > "$RESULT_DIR/phase1-report.txt" 2>/dev/null || true
+  if [ -f "$RESULT_DIR/phase1-report.txt" ] && [ "$(wc -c < "$RESULT_DIR/phase1-report.txt")" -lt 20 ]; then
+    rm -f "$RESULT_DIR/phase1-report.txt"
+  fi
+}
+
 collect_diagnostics() {
   local rc=$?
+  if [ -n "${PKG:-}" ]; then
+    collect_evidence_files || true
+  fi
   cp /tmp/phase1.txt "$RESULT_DIR/phase1-instrumentation.txt" 2>/dev/null || true
   cp /tmp/phase2.txt "$RESULT_DIR/phase2-instrumentation.txt" 2>/dev/null || true
   adb logcat -d > "$RESULT_DIR/logcat.txt" 2>/dev/null || true
@@ -72,8 +98,7 @@ if [ "$READY" -ne 1 ]; then
   exit 1
 fi
 
-PHASE1_REPORT="$(adb exec-out run-as "$PKG" cat files/inotia-user-slot1-phase1.txt 2>/dev/null || true)"
-printf '%s\n' "$PHASE1_REPORT" > "$RESULT_DIR/phase1-report.txt"
+collect_evidence_files || true
 if ! grep -q 'slot1LoadSucceeded=true' "$RESULT_DIR/phase1-report.txt"; then
   echo 'SLOT 1 load was not verified.' >&2
   cat "$RESULT_DIR/phase1-report.txt" >&2 || true
@@ -84,13 +109,6 @@ if ! grep -q 'overwriteSucceeded=true' "$RESULT_DIR/phase1-report.txt"; then
   cat "$RESULT_DIR/phase1-report.txt" >&2 || true
   exit 1
 fi
-
-for f in user-wfs-imported-slot1-gameplay.png user-wfs-overwrite-result.png; do
-  adb exec-out run-as "$PKG" cat "cache/$f" > "$RESULT_DIR/$f" 2>/dev/null || true
-  if [ -f "$RESULT_DIR/$f" ] && [ "$(wc -c < "$RESULT_DIR/$f")" -lt 100 ]; then
-    rm -f "$RESULT_DIR/$f"
-  fi
-done
 
 PID_BEFORE="$(adb shell pidof "$PKG" | tr -d '\r')"
 if [ -z "$PID_BEFORE" ]; then
@@ -131,8 +149,7 @@ PHASE2_RC=$?
 set -e
 cat /tmp/phase2.txt
 cp /tmp/phase2.txt "$RESULT_DIR/phase2-instrumentation.txt"
-adb exec-out run-as "$PKG" cat cache/user-wfs-reloaded-slot1-gameplay.png > "$RESULT_DIR/user-wfs-reloaded-slot1-gameplay.png" 2>/dev/null || true
-adb exec-out run-as "$PKG" cat cache/user-wfs-final-report.txt > "$RESULT_DIR/final-report.txt" 2>/dev/null || true
+collect_evidence_files || true
 adb logcat -d > "$RESULT_DIR/logcat.txt" 2>/dev/null || true
 
 if [ "$PHASE2_RC" -ne 0 ]; then
@@ -147,15 +164,15 @@ if ! grep -Eq 'OK \(1 test' /tmp/phase2.txt; then
   echo 'Phase 2 did not report one successful test.' >&2
   exit 1
 fi
-if ! grep -q 'forceStopPersistence=true' "$RESULT_DIR/final-report.txt"; then
+if ! grep -q 'forceStopPersistence=true' "$RESULT_DIR/user-wfs-final-report.txt"; then
   echo 'force-stop persistence was not verified.' >&2
   exit 1
 fi
-if ! grep -q 'slot1ReloadSucceeded=true' "$RESULT_DIR/final-report.txt"; then
+if ! grep -q 'slot1ReloadSucceeded=true' "$RESULT_DIR/user-wfs-final-report.txt"; then
   echo 'SLOT 1 reload was not verified.' >&2
   exit 1
 fi
-if ! grep -q "committedSaveSha256=$COMMITTED_SHA" "$RESULT_DIR/final-report.txt"; then
+if ! grep -q "committedSaveSha256=$COMMITTED_SHA" "$RESULT_DIR/user-wfs-final-report.txt"; then
   echo 'Committed save hash was not preserved across process death.' >&2
   exit 1
 fi
