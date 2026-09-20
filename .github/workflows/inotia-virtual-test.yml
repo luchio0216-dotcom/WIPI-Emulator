@@ -88,6 +88,7 @@ jobs:
           cd rust; cargo fetch; cd ..
           python3 scripts/patch-inotia-min.py
           python3 scripts/patch-inotia-storage-probe.py
+          python3 scripts/patch-inotia-save-overwrite.py
           cd rust; cargo build -p wipi_android --release --target x86_64-linux-android; cd ..
           mkdir -p android/app/src/main/jniLibs/x86_64
           cp rust/target/x86_64-linux-android/release/libwipi_android.so android/app/src/main/jniLibs/x86_64/
@@ -108,7 +109,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
-          script: set -e; gradle -p android :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace; APP_APK=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -n1); TEST_APK=$(find android/app/build/outputs/apk/androidTest/debug -name '*.apk' | head -n1); adb install -r "$APP_APK"; adb install -r "$TEST_APK"; set +e; adb shell am instrument -w -r -e class com.parkjeongseop.wipi.InotiaPDataIntegrationTest com.parkjeongseop.wipi.pdata4.test/androidx.test.runner.AndroidJUnitRunner > /tmp/inotia-instrumentation.txt 2>&1; TEST_RC=$?; if grep -qE 'FAILURES!!!|No emulator frame was produced' /tmp/inotia-instrumentation.txt; then TEST_RC=1; elif grep -q 'OK (1 test)' /tmp/inotia-instrumentation.txt; then TEST_RC=0; fi; cat /tmp/inotia-instrumentation.txt; set -e; mkdir -p inotia-virtual-result; PKG='com.parkjeongseop.wipi.pdata4'; for f in inotia-before.png inotia-after-restart.png inotia-after-ok.png inotia-character.png inotia-stage2.txt inotia-report.txt; do adb exec-out run-as "$PKG" cat "cache/$f" > "inotia-virtual-result/$f" 2>/dev/null || true; done; cp /tmp/inotia-instrumentation.txt inotia-virtual-result/instrumentation.txt || true; adb logcat -d > inotia-virtual-result/logcat.txt 2>/dev/null || true; ls -lh inotia-virtual-result || true; exit "$TEST_RC"
+          script: set -e; gradle -p android :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace; APP_APK=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -n1); TEST_APK=$(find android/app/build/outputs/apk/androidTest/debug -name '*.apk' | head -n1); adb install -r "$APP_APK"; adb install -r "$TEST_APK"; set +e; adb shell am instrument -w -r -e class com.parkjeongseop.wipi.InotiaPDataIntegrationTest com.parkjeongseop.wipi.pdata4.test/androidx.test.runner.AndroidJUnitRunner > /tmp/inotia-instrumentation.txt 2>&1; TEST_RC=$?; if grep -qE 'FAILURES!!!|No emulator frame was produced' /tmp/inotia-instrumentation.txt; then TEST_RC=1; elif grep -qE 'OK \([0-9]+ tests?\)' /tmp/inotia-instrumentation.txt; then TEST_RC=0; fi; cat /tmp/inotia-instrumentation.txt; set -e; mkdir -p inotia-virtual-result; PKG='com.parkjeongseop.wipi.pdata4'; for f in inotia-before.png inotia-after-restart.png inotia-after-ok.png inotia-character.png inotia-stage2.txt inotia-report.txt inotia-wfs-report.txt; do adb exec-out run-as "$PKG" cat "cache/$f" > "inotia-virtual-result/$f" 2>/dev/null || true; done; cp /tmp/inotia-instrumentation.txt inotia-virtual-result/instrumentation.txt || true; adb logcat -d > inotia-virtual-result/logcat.txt 2>/dev/null || true; ls -lh inotia-virtual-result || true; exit "$TEST_RC"
 
       - name: Upload virtual-device evidence
         if: always()
