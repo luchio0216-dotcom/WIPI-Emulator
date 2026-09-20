@@ -1,8 +1,10 @@
 package com.parkjeongseop.wipi
 
 import android.graphics.Bitmap
+import android.util.Base64
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -13,94 +15,144 @@ import java.security.MessageDigest
 class InotiaSaveOverwriteExploreTest {
     private val width = SCREEN_WIDTH
     private val height = SCREEN_HEIGHT
+    private val gameId = "inotia-user-wfs-save"
 
     @Test
-    fun driveRealGameIntoSystemSaveAndCaptureEvidence() {
+    fun phase1ImportUserWfsLoadSlot1AndOverwrite() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         val testContext = instrumentation.context
         WipiNative.init(context)
 
         val archive = testContext.assets.open("inotia1_flat.zip").use { it.readBytes() }
-        val root = File(context.filesDir, "games/inotia-save-explore").apply { deleteRecursively(); mkdirs() }
+        val wfsText = testContext.assets.open("inotia1_user_save.wfs.b64").bufferedReader().use { it.readText() }
+        val wfs = Base64.decode(wfsText.trim(), Base64.DEFAULT)
+        val logical = SaveBackup.decodeForTest(wfs, archive).associate { it.key to it.data }
+        val expectedSave = logical["db/save0.dat"] ?: throw AssertionError("User WFS does not contain db/save0.dat")
+        assertTrue("User WFS save0.dat is empty", expectedSave.isNotEmpty())
+
+        val root = File(context.filesDir, "games/$gameId").apply { deleteRecursively(); mkdirs() }
         val gameFile = File(root, "inotia1.zip").apply { writeBytes(archive) }
-        val entry = GameEntry("inotia-save-explore", "Inotia save overwrite explore", null, gameFile, "inotia1.zip", File(root, "data"))
+        val entry = GameEntry(gameId, "Inotia user WFS persistence test", null, gameFile, "inotia1.zip", File(root, "data"))
         entry.dataDir.mkdirs()
 
+        val importResult = SaveBackup.importKtf(entry, wfs)
+        val saveFile = File(entry.dataDir, "db/PD005362/save0.dat/1")
+        assertTrue("WFS import did not materialize slot 1 save0.dat", saveFile.isFile)
+        assertArrayEquals("Imported slot 1 bytes do not match the user WFS", expectedSave, saveFile.readBytes())
+
+        val importedBytes = saveFile.readBytes()
+        val importedSha = sha256(importedBytes)
+        val importedMtime = saveFile.lastModified()
+
         assertTrue(WipiNative.nativeStart(gameFile.readBytes(), entry.filename, entry.dataDir.absolutePath, ""))
+        navigateToContinueSlot1()
+        val loadedFrame = captureAfterDelay(5000)
+        saveFrame(context.cacheDir, "inotia-wfs-loaded-slot1.png", loadedFrame)
+        val loadError = pendingError()
+        assertTrue("Loading user WFS slot 1 produced a native error: ${loadError ?: "none"}", loadError == null)
+
+        repeat(4) { press("RIGHT") }
+        repeat(2) { press("DOWN") }
+        waitAndPump(1500)
+
+        press("SOFT_L")
+        val menuFrame = captureAfterDelay(1500)
+        saveFrame(context.cacheDir, "inotia-wfs-menu.png", menuFrame)
+        repeat(5) { press("RIGHT") }
+        val systemTab = captureAfterDelay(1200)
+        saveFrame(context.cacheDir, "inotia-wfs-system-tab.png", systemTab)
+        press("OK")
+        val systemList = captureAfterDelay(1500)
+        saveFrame(context.cacheDir, "inotia-wfs-system-list.png", systemList)
+
+        press("OK")
+        waitAndPump(1500)
+        press("OK")
+        val saveResult = captureAfterDelay(4000)
+        saveFrame(context.cacheDir, "inotia-wfs-save-result.png", saveResult)
+        val saveError = pendingError()
+        assertTrue("Game Save produced a native error: ${saveError ?: "none"}", saveError == null)
+        WipiNative.nativeStop()
+        Thread.sleep(500)
+
+        assertTrue("Game Save removed slot 1 save0.dat", saveFile.isFile)
+        val afterBytes = saveFile.readBytes()
+        val afterSha = sha256(afterBytes)
+        val afterMtime = saveFile.lastModified()
+        assertTrue("Game Save left slot 1 empty", afterBytes.isNotEmpty())
+        assertTrue(
+            "Save command did not overwrite slot 1 (same bytes and timestamp)",
+            afterSha != importedSha || afterMtime > importedMtime,
+        )
+
+        File(root, "phase1-proof.txt").writeText(
+            "wfsSha256=${sha256(wfs)}\n" +
+                "wfsEntries=${logical.keys.sorted()}\n" +
+                "importEntries=${importResult.entryCount}\n" +
+                "importBytes=${importResult.totalBytes}\n" +
+                "importedSize=${importedBytes.size}\n" +
+                "importedSha256=$importedSha\n" +
+                "importedMtime=$importedMtime\n" +
+                "afterSize=${afterBytes.size}\n" +
+                "afterSha256=$afterSha\n" +
+                "afterMtime=$afterMtime\n" +
+                "loadError=${loadError ?: "none"}\n" +
+                "saveError=${saveError ?: "none"}\n"
+        )
+        File(context.cacheDir, "inotia-wfs-phase1.txt").writeText(File(root, "phase1-proof.txt").readText())
+        println("INOTIA_WFS_PHASE1 imported=$importedSha after=$afterSha size=${afterBytes.size}")
+    }
+
+    @Test
+    fun phase2RelaunchAndLoadPersistedSlot1() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        WipiNative.init(context)
+
+        val root = File(context.filesDir, "games/$gameId")
+        val gameFile = File(root, "inotia1.zip")
+        val dataDir = File(root, "data")
+        val proofFile = File(root, "phase1-proof.txt")
+        val saveFile = File(dataDir, "db/PD005362/save0.dat/1")
+        assertTrue("Phase 1 game package is missing after process restart", gameFile.isFile)
+        assertTrue("Phase 1 proof is missing after process restart", proofFile.isFile)
+        assertTrue("Slot 1 save0.dat is missing after process restart", saveFile.isFile)
+
+        val proof = proofFile.readText()
+        val expectedSha = proof.lineSequence()
+            .firstOrNull { it.startsWith("afterSha256=") }
+            ?.substringAfter('=')
+            ?: throw AssertionError("Phase 1 did not record the post-save SHA")
+        val persistedBytes = saveFile.readBytes()
+        val persistedSha = sha256(persistedBytes)
+        assertTrue("Saved slot bytes changed while the app was stopped", persistedSha == expectedSha)
+        assertTrue("Persisted slot 1 is empty", persistedBytes.isNotEmpty())
+
+        assertTrue(WipiNative.nativeStart(gameFile.readBytes(), "inotia1.zip", dataDir.absolutePath, ""))
+        navigateToContinueSlot1()
+        val relaunchedFrame = captureAfterDelay(5000)
+        saveFrame(context.cacheDir, "inotia-wfs-relaunched-slot1.png", relaunchedFrame)
+        val reloadError = pendingError()
+        assertTrue("Reloading persisted slot 1 produced a native error: ${reloadError ?: "none"}", reloadError == null)
+        WipiNative.nativeStop()
+
+        val report = proof +
+            "persistedSize=${persistedBytes.size}\n" +
+            "persistedSha256=$persistedSha\n" +
+            "reloadError=${reloadError ?: "none"}\n" +
+            "relaunchLoadSucceeded=true\n"
+        File(context.cacheDir, "inotia-wfs-phase2.txt").writeText(report)
+        println("INOTIA_WFS_PHASE2 persisted=$persistedSha reloadError=${reloadError ?: "none"}")
+    }
+
+    private fun navigateToContinueSlot1() {
         waitAndPump(7000); press("OK")
         waitAndPump(3500); press("OK")
         waitAndPump(8000); press("OK")
-        waitAndPump(5000); press("DOWN"); press("OK")
+        waitAndPump(5000); press("OK")
         waitAndPump(6000); press("OK")
         waitAndPump(8000)
-
-        // The prior evidence proved we were still on the stat-decision screen here.
-        // Re-roll a few times, confirm the displayed stats, accept the default name,
-        // then use the intro's visible # SKIP soft control to reach actual gameplay.
-        repeat(5) { press("RIGHT") }
-        waitAndPump(1200)
-        press("OK")
-        waitAndPump(1800)
-        press("OK")
-        waitAndPump(3500)
-        press("#")
-        waitAndPump(9000)
-
-        val gameplay = captureAfterDelay(3000)
-        saveFrame(context.cacheDir, "inotia-save-gameplay.png", gameplay)
-
-        val saveFile = File(entry.dataDir, "db/PD005362/save0.dat/1")
-        val beforeExists = saveFile.isFile
-        val beforeBytes = if (beforeExists) saveFile.readBytes() else ByteArray(0)
-        val beforeSha = sha256(beforeBytes)
-
-        // Open the in-game menu and move to the System tab.
-        press("SOFT_L")
-        val menu0 = captureAfterDelay(1500)
-        saveFrame(context.cacheDir, "inotia-save-menu0.png", menu0)
-        repeat(5) { press("RIGHT") }
-        val systemTab = captureAfterDelay(1200)
-        saveFrame(context.cacheDir, "inotia-save-system-tab.png", systemTab)
-        press("OK")
-        val systemList = captureAfterDelay(1500)
-        saveFrame(context.cacheDir, "inotia-save-system-list.png", systemList)
-
-        // Save is the first item. A following OK is harmless if save is immediate and
-        // also handles the confirmation dialog on builds that display one.
-        press("OK")
-        waitAndPump(1200)
-        press("OK")
-        val saveResult = captureAfterDelay(4000)
-        saveFrame(context.cacheDir, "inotia-save-result.png", saveResult)
-        val afterError = pendingError()
-
-        val afterExists = saveFile.isFile
-        val afterBytes = if (afterExists) saveFile.readBytes() else ByteArray(0)
-        val afterSha = sha256(afterBytes)
-        val tree = summarizeDataTree(entry.dataDir)
-        File(context.cacheDir, "inotia-save-explore.txt").writeText(
-            "beforeExists=$beforeExists\n" +
-                "beforeSize=${beforeBytes.size}\n" +
-                "beforeSha256=$beforeSha\n" +
-                "afterExists=$afterExists\n" +
-                "afterSize=${afterBytes.size}\n" +
-                "afterSha256=$afterSha\n" +
-                "nativeError=${afterError ?: "none"}\n" +
-                "gameplayToMenuDiff=${diffRatio(gameplay, menu0)}\n" +
-                "menuToSystemTabDiff=${diffRatio(menu0, systemTab)}\n" +
-                "systemTabToListDiff=${diffRatio(systemTab, systemList)}\n" +
-                "systemListToSaveResultDiff=${diffRatio(systemList, saveResult)}\n" +
-                "--- data tree ---\n$tree\n"
-        )
-        println("INOTIA_SAVE_EXPLORE before=$beforeExists/${beforeBytes.size}/$beforeSha after=$afterExists/${afterBytes.size}/$afterSha error=${afterError ?: "none"}")
-
-        // Do not allow a green workflow unless a real Inotia save slot was actually
-        // materialized by the in-game Save command.
-        assertTrue("Inotia Save command did not create save0.dat", afterExists)
-        assertTrue("Inotia save0.dat is empty", afterBytes.isNotEmpty())
-        assertTrue("Inotia reported a native error after Save: ${afterError ?: "none"}", afterError == null)
-        WipiNative.nativeStop()
     }
 
     private fun press(key: String) {
@@ -145,25 +197,4 @@ class InotiaSaveOverwriteExploreTest {
 
     private fun sha256(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
-
-    private fun diffRatio(a: IntArray, b: IntArray): Double {
-        var changed = 0L
-        val count = minOf(a.size, b.size)
-        for (i in 0 until count) {
-            val ca = a[i]
-            val cb = b[i]
-            val delta = kotlin.math.abs(((ca shr 16) and 0xff) - ((cb shr 16) and 0xff)) +
-                kotlin.math.abs(((ca shr 8) and 0xff) - ((cb shr 8) and 0xff)) +
-                kotlin.math.abs((ca and 0xff) - (cb and 0xff))
-            if (delta > 24) changed++
-        }
-        return if (count == 0) 0.0 else changed.toDouble() / count.toDouble()
-    }
-
-    private fun summarizeDataTree(root: File): String = root.walkTopDown()
-        .filter { it.isFile }
-        .map { "${it.relativeTo(root).path.replace(File.separatorChar, '/')} (${it.length()})" }
-        .sorted()
-        .joinToString("\n")
-        .ifBlank { "<empty>" }
 }
