@@ -55,6 +55,7 @@ jobs:
           cargo fetch
           cd ..
           python3 scripts/patch-inotia-min.py
+          python3 scripts/patch-inotia-storage-probe.py
           cd rust
           cargo build -p wipi_android --release --target aarch64-linux-android
           cd ..
