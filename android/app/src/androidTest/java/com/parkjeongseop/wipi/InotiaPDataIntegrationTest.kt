@@ -3,11 +3,16 @@ package com.parkjeongseop.wipi
 import android.graphics.Bitmap
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.security.MessageDigest
+import java.util.zip.CRC32
+import java.util.zip.ZipInputStream
 
 @RunWith(AndroidJUnit4::class)
 class InotiaPDataIntegrationTest {
@@ -55,6 +60,80 @@ class InotiaPDataIntegrationTest {
         println("INOTIA_STAGE2_BEGIN"); print(stage2); println("INOTIA_STAGE2_END"); println("INOTIA_REPORT_BEGIN"); print(report); println("INOTIA_REPORT_END")
         WipiNative.nativeStop()
     }
+
+    @Test
+    fun wFeatureWfsRoundTripRestoresKtfSaveTree() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val testContext = instrumentation.context
+        val archive = testContext.assets.open("inotia1_flat.zip").use { it.readBytes() }
+        val packagedChar = zipEntry(archive, "P/char.dat")
+
+        val sourceRoot = File(context.filesDir, "games/inotia-wfs-source").apply { deleteRecursively(); mkdirs() }
+        val sourceFile = File(sourceRoot, "inotia1.zip").apply { writeBytes(archive) }
+        val source = GameEntry("inotia-wfs-source", "Inotia WFS source", null, sourceFile, "inotia1.zip", File(sourceRoot, "data"))
+        val sourceDb = File(source.dataDir, "db/PD005362")
+        File(sourceDb, "char.dat").mkdirs(); File(sourceDb, "char.dat/1").writeBytes(packagedChar)
+        val prefs = ByteArray(64) { i -> (i * 3 + 7).toByte() }
+        val save0 = ByteArray(540) { i -> (i * 11 + 5).toByte() }
+        File(sourceDb, "prefs").mkdirs(); File(sourceDb, "prefs/1").writeBytes(prefs)
+        File(sourceDb, "save0.dat").mkdirs(); File(sourceDb, "save0.dat/1").writeBytes(save0)
+        File(sourceDb, "deleted.dat").mkdirs() // empty leaf = W-Feature db/.removed tombstone
+        val fsFile = File(source.dataDir, "fs/010100D3/options.bin").apply { parentFile?.mkdirs(); writeBytes(byteArrayOf(9, 8, 7, 6)) }
+
+        val wfs = SaveBackup.exportKtf(source)
+        assertEquals("WFSAVEBK", wfs.copyOfRange(0, 8).toString(Charsets.US_ASCII))
+        assertEquals(1, wfs[8].toInt() and 0xff)
+        assertEquals(0, wfs[9].toInt() and 0xff)
+        assertArrayEquals(MessageDigest.getInstance("SHA-256").digest(archive), wfs.copyOfRange(10, 42))
+        val payloadLength = u32le(wfs, 42).toInt()
+        assertEquals(wfs.size - 50, payloadLength)
+        val payload = wfs.copyOfRange(50, wfs.size)
+        assertEquals(u32le(wfs, 46), CRC32().apply { update(payload) }.value)
+
+        val logical = SaveBackup.decodeForTest(wfs, archive).associate { it.key to it.data }
+        assertTrue("packaged char.dat must not be exported as player progress", "db/char.dat" !in logical)
+        assertArrayEquals(prefs, logical["db/prefs"])
+        assertArrayEquals(save0, logical["db/save0.dat"])
+        assertEquals("deleted.dat", logical["db/.removed"]?.toString(Charsets.UTF_8))
+        assertArrayEquals(fsFile.readBytes(), logical["fs/options.bin"])
+
+        val targetRoot = File(context.filesDir, "games/inotia-wfs-target").apply { deleteRecursively(); mkdirs() }
+        val targetFile = File(targetRoot, "inotia1.zip").apply { writeBytes(archive) }
+        val target = GameEntry("inotia-wfs-target", "Inotia WFS target", null, targetFile, "inotia1.zip", File(targetRoot, "data"))
+        // Stale progress must be replaced rather than merged.
+        File(target.dataDir, "db/PD005362/oldsave.dat").mkdirs(); File(target.dataDir, "db/PD005362/oldsave.dat/1").writeBytes(byteArrayOf(1, 2, 3))
+
+        val result = SaveBackup.importKtf(target, wfs)
+        assertEquals(logical.size, result.entryCount)
+        assertArrayEquals(prefs, File(target.dataDir, "db/PD005362/prefs/1").readBytes())
+        assertArrayEquals(save0, File(target.dataDir, "db/PD005362/save0.dat/1").readBytes())
+        assertTrue(File(target.dataDir, "db/PD005362/deleted.dat").isDirectory)
+        assertTrue(File(target.dataDir, "db/PD005362/deleted.dat").listFiles().isNullOrEmpty())
+        assertTrue(!File(target.dataDir, "db/PD005362/oldsave.dat").exists())
+        assertArrayEquals(byteArrayOf(9, 8, 7, 6), File(target.dataDir, "fs/010100D3/options.bin").readBytes())
+
+        // The format is deterministic: restoring and exporting the same logical save produces the same .wfs bytes.
+        val roundTrip = SaveBackup.exportKtf(target)
+        assertArrayEquals(wfs, roundTrip)
+        File(context.cacheDir, "inotia-wfs-report.txt").writeText(
+            "wfsBytes=${wfs.size}\nentries=${logical.keys.sorted()}\nroundTripExact=${wfs.contentEquals(roundTrip)}\n"
+        )
+    }
+
+    private fun zipEntry(zipBytes: ByteArray, wanted: String): ByteArray {
+        ZipInputStream(ByteArrayInputStream(zipBytes)).use { zip ->
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                if (!entry.isDirectory && entry.name.replace('\\', '/') == wanted) return zip.readBytes()
+                zip.closeEntry()
+            }
+        }
+        error("ZIP entry missing: $wanted")
+    }
+
+    private fun u32le(bytes: ByteArray, offset: Int): Long =
+        (0 until 4).fold(0L) { value, i -> value or ((bytes[offset + i].toLong() and 0xff) shl (i * 8)) }
 
     private fun pressOk() = pressKey("OK")
     private fun pressDown() = pressKey("DOWN")
