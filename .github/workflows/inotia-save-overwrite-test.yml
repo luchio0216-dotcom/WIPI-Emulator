@@ -22,18 +22,21 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Prepare Inotia package and private user WFS
+      - name: Prepare Inotia package and user WFS fixture
         shell: bash
-        env:
-          INOTIA_USER_WFS_B64: ${{ secrets.INOTIA_USER_WFS_B64 }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/inotia android/app/src/androidTest/assets
-          if [ -z "${INOTIA_USER_WFS_B64:-}" ]; then
-            echo 'Missing GitHub Actions secret INOTIA_USER_WFS_B64'
-            exit 22
-          fi
-          printf '%s' "$INOTIA_USER_WFS_B64" > android/app/src/androidTest/assets/inotia1_user_save.wfs.b64
+          test -f android/app/src/androidTest/assets/inotia_user_slot1.wfs
+          python3 - <<'PY'
+          import pathlib, hashlib
+          p=pathlib.Path('android/app/src/androidTest/assets/inotia_user_slot1.wfs')
+          b=p.read_bytes()
+          assert len(b)==703, len(b)
+          assert hashlib.sha256(b).hexdigest()=='32f4404f36930317a8a102b079e6da105fc8628837e53a7606dbf8a9b81ec918'
+          assert b[:8]==b'WFSAVEBK'
+          print('WFS fixture OK', len(b), hashlib.sha256(b).hexdigest())
+          PY
           curl -fsSL -A 'Mozilla/5.0' 'https://dubigame.tistory.com/135' -o /tmp/inotia/page.html
           python3 - <<'PY'
           import html,re,subprocess,pathlib,zipfile
