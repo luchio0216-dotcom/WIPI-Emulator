@@ -22,21 +22,11 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Prepare Inotia package and user WFS fixture
+      - name: Prepare Inotia package
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p /tmp/inotia android/app/src/androidTest/assets
-          test -f android/app/src/androidTest/assets/inotia_user_slot1.wfs
-          python3 - <<'PY'
-          import pathlib, hashlib
-          p=pathlib.Path('android/app/src/androidTest/assets/inotia_user_slot1.wfs')
-          b=p.read_bytes()
-          assert len(b)==703, len(b)
-          assert hashlib.sha256(b).hexdigest()=='32f4404f36930317a8a102b079e6da105fc8628837e53a7606dbf8a9b81ec918'
-          assert b[:8]==b'WFSAVEBK'
-          print('WFS fixture OK', len(b), hashlib.sha256(b).hexdigest())
-          PY
           curl -fsSL -A 'Mozilla/5.0' 'https://dubigame.tistory.com/135' -o /tmp/inotia/page.html
           python3 - <<'PY'
           import html,re,subprocess,pathlib,zipfile
@@ -85,7 +75,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm || true
 
-      - name: Import user WFS, overwrite slot 1, force-stop, relaunch and reload
+      - name: Generate WFS in game, import, overwrite, restart and reload
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
@@ -99,66 +89,20 @@ jobs:
             gradle -p android :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace
             APP_APK="$(find "$PWD/android/app/build/outputs/apk" -type f -name '*.apk' ! -path '*/androidTest/*' -print -quit)"
             TEST_APK="$(find "$PWD/android/app/build/outputs/apk" -type f -name '*.apk' -path '*/androidTest/*' -print -quit)"
-            echo "APP_APK=$APP_APK"
-            echo "TEST_APK=$TEST_APK"
-            test -f "$APP_APK"
-            test -f "$TEST_APK"
-            adb install -r "$APP_APK"
-            adb install -r "$TEST_APK"
-            adb logcat -c || true
-
-            run_test() {
-              method="$1"
-              output="$2"
-              set +e
-              adb shell am instrument -w -r \
-                -e class "com.parkjeongseop.wipi.InotiaSaveOverwriteExploreTest#$method" \
-                com.parkjeongseop.wipi.pdata4.test/androidx.test.runner.AndroidJUnitRunner \
-                > "$output" 2>&1
-              rc=$?
-              set -e
-              cat "$output"
-              if [ "$rc" -ne 0 ]; then
-                echo "Instrumentation command failed with rc=$rc"
-                return 1
-              fi
-              if grep -Eq 'FAILURES!!!|INSTRUMENTATION_STATUS_CODE: -2' "$output"; then
-                echo "Instrumentation reported a test failure"
-                return 1
-              fi
-              if ! grep -Eq 'OK \([0-9]+ test' "$output"; then
-                echo "Instrumentation did not report an OK test result"
-                return 1
-              fi
-            }
-
+            test -f "$APP_APK"; test -f "$TEST_APK"
+            adb install -r "$APP_APK"; adb install -r "$TEST_APK"; adb logcat -c || true
             mkdir -p inotia-save-result
-            run_test phase1ImportUserWfsLoadSlot1AndOverwrite /tmp/wfs-phase1.txt
-            cp /tmp/wfs-phase1.txt inotia-save-result/instrumentation-phase1.txt
-
-            echo 'Force-stopping target app to prove process-level persistence'
-            adb shell am force-stop com.parkjeongseop.wipi.pdata4
-            sleep 2
-            TARGET_PID="$(adb shell pidof com.parkjeongseop.wipi.pdata4 2>/dev/null | tr -d '\r' || true)"
-            echo "pidAfterForceStop=${TARGET_PID:-none}"
-            test -z "$TARGET_PID"
-
-            run_test phase2RelaunchAndLoadPersistedSlot1 /tmp/wfs-phase2.txt
-            cp /tmp/wfs-phase2.txt inotia-save-result/instrumentation-phase2.txt
-
-            for f in \
-              inotia-wfs-loaded-slot1.png \
-              inotia-wfs-menu.png \
-              inotia-wfs-system-tab.png \
-              inotia-wfs-system-list.png \
-              inotia-wfs-save-result.png \
-              inotia-wfs-relaunched-slot1.png \
-              inotia-wfs-phase1.txt \
-              inotia-wfs-phase2.txt; do
+            set +e
+            adb shell am instrument -w -r -e class com.parkjeongseop.wipi.InotiaSyntheticWfsSaveTest#syntheticWfsImportOverwriteAndReload com.parkjeongseop.wipi.pdata4.test/androidx.test.runner.AndroidJUnitRunner > /tmp/instrumentation.txt 2>&1
+            rc=$?
+            set -e
+            cat /tmp/instrumentation.txt
+            cp /tmp/instrumentation.txt inotia-save-result/instrumentation.txt
+            for f in synthetic-first-gameplay.png synthetic-baseline-save.png synthetic-imported-gameplay.png synthetic-overwrite-result.png synthetic-reloaded-gameplay.png synthetic-wfs-save-report.txt; do
               adb exec-out run-as com.parkjeongseop.wipi.pdata4 cat "cache/$f" > "inotia-save-result/$f" 2>/dev/null || true
             done
             adb logcat -d > inotia-save-result/logcat.txt 2>/dev/null || true
-            ls -lh inotia-save-result
+            if [ "$rc" -ne 0 ] || grep -Eq 'FAILURES!!!|INSTRUMENTATION_STATUS_CODE: -2' /tmp/instrumentation.txt || ! grep -Eq 'OK \([0-9]+ test' /tmp/instrumentation.txt; then exit 1; fi
 
       - name: Upload save evidence
         if: always()
