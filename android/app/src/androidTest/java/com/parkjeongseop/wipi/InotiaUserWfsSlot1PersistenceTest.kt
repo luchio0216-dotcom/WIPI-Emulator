@@ -4,7 +4,6 @@ import android.graphics.Bitmap
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -41,26 +40,37 @@ class InotiaUserWfsSlot1PersistenceTest {
         assertEquals(sha(decoded.getValue("db/save0.dat")), sha(saveFile.readBytes()))
         assertEquals(sha(decoded.getValue("db/prefs")), sha(prefsFile.readBytes()))
         val importedSha = sha(saveFile.readBytes())
+        val importedMtime = saveFile.lastModified()
+
         assertTrue(WipiNative.nativeStart(archive, entry.filename, entry.dataDir.absolutePath, ""))
         continueSlot1()
         val gameplay = capture(6000)
         frame(context.cacheDir, "user-wfs-imported-slot1-gameplay.png", gameplay)
         assertTrue("existing SLOT 1 did not load: ${error()}", error() == null)
-        repeat(3) { press("RIGHT") }
-        repeat(2) { press("DOWN") }
-        waitPump(1500)
+
+        // User-confirmed real handset/W-Feature sequence from gameplay:
+        // CLR -> 4(west) -> 5(OK) -> 5(OK) = System -> Save -> confirm.
         saveFromGameplay(context.cacheDir)
         val saveResult = capture(3500)
         frame(context.cacheDir, "user-wfs-overwrite-result.png", saveResult)
         assertTrue("System/Save raised native error: ${error()}", error() == null)
         assertTrue("overwrite removed save0.dat", saveFile.isFile && saveFile.length() > 0)
         val committedSha = sha(saveFile.readBytes())
-        assertNotEquals("save0.dat bytes did not update after real in-game overwrite", importedSha, committedSha)
+        val committedMtime = saveFile.lastModified()
+        assertTrue(
+            "save0.dat was not rewritten after exact CLR,4,5,5 save sequence: sha=$committedSha mtime=$committedMtime",
+            committedSha != importedSha || committedMtime > importedMtime
+        )
+
+        // User-confirmed sequence after the '세이브 완료' dialog:
+        // 5 dismisses result, 2 wraps Save -> Exit, 5 selects Exit, 5 confirms.
+        exitToMainMenu(context.cacheDir)
+
         File(context.filesDir, "inotia-user-slot1-phase1.txt").writeText(
-            "wfsBytes=${originalWfs.size}\nfixtureIdentityRebound=$fixtureIdentityRebound\nimportEntries=${imported.entryCount}\nimportTotalBytes=${imported.totalBytes}\nimportedSaveSha256=$importedSha\ncommittedSaveSha256=$committedSha\nsaveBytes=${saveFile.length()}\nprefsBytes=${prefsFile.length()}\nslot1LoadSucceeded=true\noverwriteSucceeded=true\n"
+            "wfsBytes=${originalWfs.size}\nfixtureIdentityRebound=$fixtureIdentityRebound\nimportEntries=${imported.entryCount}\nimportTotalBytes=${imported.totalBytes}\nimportedSaveSha256=$importedSha\ncommittedSaveSha256=$committedSha\nimportedSaveMtime=$importedMtime\ncommittedSaveMtime=$committedMtime\nsaveBytes=${saveFile.length()}\nprefsBytes=${prefsFile.length()}\nslot1LoadSucceeded=true\nexactSaveSequence=CLR,4,5,5\nexactExitSequence=5,2,5,5\noverwriteSucceeded=true\n"
         )
         File(context.filesDir, "inotia-force-stop-ready.flag").writeText(committedSha)
-        println("INOTIA_USER_WFS_PHASE1_READY imported=$importedSha committed=$committedSha bytes=${saveFile.length()} rebound=$fixtureIdentityRebound")
+        println("INOTIA_USER_WFS_PHASE1_READY imported=$importedSha committed=$committedSha bytes=${saveFile.length()} rebound=$fixtureIdentityRebound mtime=$committedMtime")
         while (true) Thread.sleep(1000)
     }
 
@@ -108,19 +118,25 @@ class InotiaUserWfsSlot1PersistenceTest {
     }
 
     private fun saveFromGameplay(dir: File) {
-        // Runs #31/#32: soft-key guesses enter minimap. #33: CLR is a no-op.
-        // #34: center OK also enters minimap. Probe NUM0 next; the minimap itself
-        // advertises */# controls, so NUM0 is a stronger independent menu candidate.
-        press("0")
-        frame(dir, "user-wfs-menu-open.png", capture(1200))
-        repeat(5) { press("RIGHT") }
-        frame(dir, "user-wfs-system-tab.png", capture(900))
-        press("OK")
-        frame(dir, "user-wfs-system-list.png", capture(1200))
-        press("OK")
-        frame(dir, "user-wfs-save-selected.png", capture(2200))
-        press("OK")
-        frame(dir, "user-wfs-save-after-confirm.png", capture(1200))
+        press("CLR")
+        frame(dir, "user-wfs-save-step1-clr.png", capture(1200))
+        press("4")
+        frame(dir, "user-wfs-save-step2-num4.png", capture(1200))
+        press("5")
+        frame(dir, "user-wfs-save-step3-num5.png", capture(1200))
+        press("5")
+        frame(dir, "user-wfs-save-step4-result.png", capture(2200))
+    }
+
+    private fun exitToMainMenu(dir: File) {
+        press("5")
+        frame(dir, "user-wfs-exit-step1-dismiss-save.png", capture(1000))
+        press("2")
+        frame(dir, "user-wfs-exit-step2-num2.png", capture(1000))
+        press("5")
+        frame(dir, "user-wfs-exit-step3-select-exit.png", capture(1000))
+        press("5")
+        frame(dir, "user-wfs-main-menu-after-exit.png", capture(4000))
     }
 
     private fun press(key: String) { WipiNative.nativeKeyDown(key); Thread.sleep(150); WipiNative.nativeKeyUp(key); Thread.sleep(300) }
