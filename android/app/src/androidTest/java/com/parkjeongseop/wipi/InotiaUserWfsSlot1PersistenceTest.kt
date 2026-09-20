@@ -108,12 +108,10 @@ class InotiaUserWfsSlot1PersistenceTest {
     }
 
     private fun saveFromGameplay(dir: File) {
-        // Evidence from run #33: CLR was a no-op in gameplay, while #31/#32 soft-key
-        // guesses reached the minimap. Probe the center/OK handset key next. On KTF
-        // action RPGs the center key commonly opens the tabbed gameplay menu; if this
-        // is correct, five RIGHT presses should land on the System tab shown by the
-        // user's reference screenshot. Preserve every phase as hard evidence.
-        press("OK")
+        // Runs #31/#32: soft-key guesses enter minimap. #33: CLR is a no-op.
+        // #34: center OK also enters minimap. Probe NUM0 next; the minimap itself
+        // advertises */# controls, so NUM0 is a stronger independent menu candidate.
+        press("0")
         frame(dir, "user-wfs-menu-open.png", capture(1200))
         repeat(5) { press("RIGHT") }
         frame(dir, "user-wfs-system-tab.png", capture(900))
