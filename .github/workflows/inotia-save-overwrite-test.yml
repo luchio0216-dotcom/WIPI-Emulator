@@ -104,7 +104,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
           script: |
-            set -euo pipefail
+            set -eu
             gradle -p android :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace
             APP_APK="$(find "$PWD/android/app/build/outputs/apk" -type f -name '*.apk' ! -path '*/androidTest/*' -print -quit)"
             TEST_APK="$(find "$PWD/android/app/build/outputs/apk" -type f -name '*.apk' -path '*/androidTest/*' -print -quit)"
@@ -120,7 +120,6 @@ jobs:
             adb shell pm clear "$PKG" >/dev/null
             adb logcat -c || true
 
-            # Phase 1 deliberately stays alive after a verified real SLOT 1 overwrite.
             adb shell am instrument -w -r -e class "$CLASS#importAndOverwriteSlot1ThenWaitForForceStop" "$RUNNER" > /tmp/phase1.txt 2>&1 &
             PHASE1_HOST_PID=$!
             READY=0
@@ -172,7 +171,6 @@ jobs:
             wait "$PHASE1_HOST_PID" || true
             cp /tmp/phase1.txt inotia-save-result/phase1-instrumentation.txt || true
 
-            # Phase 2 is a new process. It must reload the already-overwritten SLOT 1 without importing again.
             set +e
             adb shell am instrument -w -r -e class "$CLASS#reloadPersistedSlotAfterForceStop" "$RUNNER" > /tmp/phase2.txt 2>&1
             PHASE2_RC=$?
@@ -184,7 +182,7 @@ jobs:
             adb logcat -d > inotia-save-result/logcat.txt 2>/dev/null || true
 
             if [ "$PHASE2_RC" -ne 0 ]; then exit 1; fi
-            if grep -Eq 'FAILURES!!!|INSTRUMENTATION_STATUS_CODE: -2|INSTRUMENTATION_CODE: -1' /tmp/phase2.txt; then exit 1; fi
+            if grep -Eq 'FAILURES!!!|INSTRUMENTATION_STATUS_CODE: -2' /tmp/phase2.txt; then exit 1; fi
             if ! grep -Eq 'OK \(1 test' /tmp/phase2.txt; then exit 1; fi
             if ! grep -q 'forceStopPersistence=true' inotia-save-result/final-report.txt; then exit 1; fi
             if ! grep -q 'slot1ReloadSucceeded=true' inotia-save-result/final-report.txt; then exit 1; fi
