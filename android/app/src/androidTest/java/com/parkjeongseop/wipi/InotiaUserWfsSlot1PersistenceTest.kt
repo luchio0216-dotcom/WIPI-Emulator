@@ -108,17 +108,18 @@ class InotiaUserWfsSlot1PersistenceTest {
     }
 
     private fun saveFromGameplay(dir: File) {
-        // Screenshot evidence: SOFT_R opens the minimap. SOFT_L opens the gameplay/system menu.
-        press("SOFT_L")
+        // Runs #31/#32 proved both soft-key guesses landed on the minimap.
+        // Probe the handset CLEAR/back key instead: on many KTF RPGs this is the
+        // gameplay menu key. Keep phase screenshots so the next run has hard evidence.
+        press("CLR")
         frame(dir, "user-wfs-menu-open.png", capture(1200))
         repeat(5) { press("RIGHT") }
         frame(dir, "user-wfs-system-tab.png", capture(900))
         press("OK")
         frame(dir, "user-wfs-system-list.png", capture(1200))
         press("OK")
-        frame(dir, "user-wfs-save-selected.png", capture(1400))
-        press("OK")
-        frame(dir, "user-wfs-save-after-confirm.png", capture(2200))
+        frame(dir, "user-wfs-save-selected.png", capture(2200))
+        frame(dir, "user-wfs-save-after-confirm.png", capture(1200))
     }
 
     private fun press(key: String) { WipiNative.nativeKeyDown(key); Thread.sleep(150); WipiNative.nativeKeyUp(key); Thread.sleep(300) }
