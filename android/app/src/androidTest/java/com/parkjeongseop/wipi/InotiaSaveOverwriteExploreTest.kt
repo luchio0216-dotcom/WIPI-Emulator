@@ -1,7 +1,6 @@
 package com.parkjeongseop.wipi
 
 import android.graphics.Bitmap
-import android.util.Base64
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertArrayEquals
@@ -25,8 +24,7 @@ class InotiaSaveOverwriteExploreTest {
         WipiNative.init(context)
 
         val archive = testContext.assets.open("inotia1_flat.zip").use { it.readBytes() }
-        val wfsText = testContext.assets.open("inotia1_user_save.wfs.b64").bufferedReader().use { it.readText() }
-        val wfs = Base64.decode(wfsText.trim(), Base64.DEFAULT)
+        val wfs = testContext.assets.open("inotia_user_slot1.wfs").use { it.readBytes() }
         val logical = SaveBackup.decodeForTest(wfs, archive).associate { it.key to it.data }
         val expectedSave = logical["db/save0.dat"] ?: throw AssertionError("User WFS does not contain db/save0.dat")
         assertTrue("User WFS save0.dat is empty", expectedSave.isNotEmpty())
@@ -52,10 +50,12 @@ class InotiaSaveOverwriteExploreTest {
         val loadError = pendingError()
         assertTrue("Loading user WFS slot 1 produced a native error: ${loadError ?: "none"}", loadError == null)
 
+        // Make a small in-game state change before overwriting slot 1.
         repeat(4) { press("RIGHT") }
         repeat(2) { press("DOWN") }
         waitAndPump(1500)
 
+        // User-provided reference flow: open menu -> System tab -> Save.
         press("SOFT_L")
         val menuFrame = captureAfterDelay(1500)
         saveFrame(context.cacheDir, "inotia-wfs-menu.png", menuFrame)
@@ -66,6 +66,7 @@ class InotiaSaveOverwriteExploreTest {
         val systemList = captureAfterDelay(1500)
         saveFrame(context.cacheDir, "inotia-wfs-system-list.png", systemList)
 
+        // Save is the first System item. Any native "에러 발생" path must fail the test.
         press("OK")
         waitAndPump(1500)
         press("OK")
