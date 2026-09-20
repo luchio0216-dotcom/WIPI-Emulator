@@ -47,9 +47,14 @@ adb shell am instrument -w -r \
 PHASE1_HOST_PID=$!
 set -e
 
+# Do not trust run-as/cat's host exit code for readiness: on some Android
+# images a missing file can still leave the outer command looking successful.
+# The marker is only valid when it contains the exact 64-hex committed hash.
 READY=0
 for _ in $(seq 1 180); do
-  if adb exec-out run-as "$PKG" cat files/inotia-force-stop-ready.flag > /tmp/committed-sha.txt 2>/dev/null; then
+  READY_VALUE="$(adb exec-out run-as "$PKG" cat files/inotia-force-stop-ready.flag 2>/dev/null | tr -d '\r\n' || true)"
+  if [[ "$READY_VALUE" =~ ^[0-9a-f]{64}$ ]]; then
+    printf '%s' "$READY_VALUE" > /tmp/committed-sha.txt
     READY=1
     break
   fi
@@ -67,19 +72,25 @@ if [ "$READY" -ne 1 ]; then
   exit 1
 fi
 
-adb exec-out run-as "$PKG" cat files/inotia-user-slot1-phase1.txt > "$RESULT_DIR/phase1-report.txt"
-for f in user-wfs-imported-slot1-gameplay.png user-wfs-overwrite-result.png; do
-  adb exec-out run-as "$PKG" cat "cache/$f" > "$RESULT_DIR/$f" 2>/dev/null || true
-done
-
+PHASE1_REPORT="$(adb exec-out run-as "$PKG" cat files/inotia-user-slot1-phase1.txt 2>/dev/null || true)"
+printf '%s\n' "$PHASE1_REPORT" > "$RESULT_DIR/phase1-report.txt"
 if ! grep -q 'slot1LoadSucceeded=true' "$RESULT_DIR/phase1-report.txt"; then
   echo 'SLOT 1 load was not verified.' >&2
+  cat "$RESULT_DIR/phase1-report.txt" >&2 || true
   exit 1
 fi
 if ! grep -q 'overwriteSucceeded=true' "$RESULT_DIR/phase1-report.txt"; then
   echo 'SLOT 1 overwrite was not verified.' >&2
+  cat "$RESULT_DIR/phase1-report.txt" >&2 || true
   exit 1
 fi
+
+for f in user-wfs-imported-slot1-gameplay.png user-wfs-overwrite-result.png; do
+  adb exec-out run-as "$PKG" cat "cache/$f" > "$RESULT_DIR/$f" 2>/dev/null || true
+  if [ -f "$RESULT_DIR/$f" ] && [ "$(wc -c < "$RESULT_DIR/$f")" -lt 100 ]; then
+    rm -f "$RESULT_DIR/$f"
+  fi
+done
 
 PID_BEFORE="$(adb shell pidof "$PKG" | tr -d '\r')"
 if [ -z "$PID_BEFORE" ]; then
