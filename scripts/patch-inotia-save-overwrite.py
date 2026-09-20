@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """Patch KTF stream-file overwrite semantics used by Inotia 1 saves.
 
-Inotia can create a fresh save with the pinned WIE implementation, but when an
-existing save is overwritten it follows the handset-style replace sequence:
-write a temporary store, remove the old named store, then rename the temporary
-store onto the final name. W-Feature models KTF slot 7 as MC_fsRename; pinned
-WIE still routes slot 7 to standard record listing. The old name-keyed remove
-shim also deleted record 1 but left the repository directory behind, making the
-final destination still look occupied.
+Inotia overwrites an existing slot using the handset sequence:
+write temporary stream -> remove old final stream -> rename temp to final.
+KTF reuses database-table slot 7 as MC_fsRename for this title.
 
-Keep the change narrow to Inotia (AID 010100D3) for slot 7, while making
-name-keyed remove distinguish packaged resources from mutable player stores.
+A packaged P/ entry needs special treatment. Removing it cannot delete the
+read-only package copy, so an empty mutable repository is used as a tombstone.
+That empty tombstone must then be accepted as the destination of the following
+rename; only an actual mutable record 1 means the destination is still busy.
 """
 from pathlib import Path
 import os
@@ -38,10 +36,9 @@ old_delete = '''    // Not a real handle — KTF name-keyed form. W-Feature mode
 '''
 
 new_delete = '''    // Not a real handle — KTF name-keyed form (MC_fsRemove semantics).
-    // Mutable player files must remove the whole repository so a following
-    // MC_fsRename(temp, final) sees a free destination. Packaged P/ resources
-    // are different: WIE has no removal ledger, so keep an empty repository as
-    // a tombstone to stop the packaged record from being seeded again.
+    // A packaged P/ entry cannot be physically removed. Represent its removal
+    // with an empty mutable repository (tombstone); the immediately-following
+    // MC_fsRename is allowed to fill that tombstone with the new record 1.
     let Ok(raw_name) = String::from_utf8(read_null_terminated_string_bytes(context, a0 as u32)?) else {
         return Ok(-22);
     };
@@ -49,15 +46,15 @@ new_delete = '''    // Not a real handle — KTF name-keyed form (MC_fsRemove se
     let packaged = read_packaged_database(context, &name).await?.is_some();
     let system = context.system();
     let pid = system.pid().to_owned();
-    if system.platform().database_repository().exists(&name, &pid).await {
-        if packaged {
-            let mut db = system.platform().database_repository().open(&name, &pid).await;
-            db.delete(1).await;
-        } else {
-            system.platform().database_repository().delete(&name, &pid).await;
-        }
+    if packaged {
+        // Open even when no mutable repository exists yet so an empty
+        // repository remains and masks the packaged record after deletion.
+        let mut db = system.platform().database_repository().open(&name, &pid).await;
+        db.delete(1).await;
+    } else if system.platform().database_repository().exists(&name, &pid).await {
+        system.platform().database_repository().delete(&name, &pid).await;
     }
-    tracing::info!("MC_dbDeleteRecord(name-keyed {name:?}, {a1}) -> 0 (packaged={packaged}, whole_store={})", !packaged);
+    tracing::info!("MC_fsRemove({name:?}, area={a1}) -> 0 (packaged={packaged})");
     Ok(0)
 '''
 
@@ -94,21 +91,28 @@ pub async fn list_record_or_rename_ktf(
         return Ok(0);
     }}
 
-    // The handset refuses to rename onto an occupied destination. The normal
-    // Inotia overwrite sequence removes the final name immediately before
-    // this call, so a still-existing destination is a real error.
     let destination_packaged = read_packaged_database(context, &new_name).await?.is_some();
     let system = context.system();
     let pid = system.pid().to_owned();
-    if destination_packaged || system.platform().database_repository().exists(&new_name, &pid).await {{
-        tracing::warn!("MC_fsRename destination already exists: {{new_name:?}}");
+    let destination_repo_exists = system.platform().database_repository().exists(&new_name, &pid).await;
+    let destination_has_record = if destination_repo_exists {{
+        let db = system.platform().database_repository().open(&new_name, &pid).await;
+        db.get(1).await.is_some()
+    }} else {{
+        false
+    }};
+
+    // A packaged destination with no mutable repository is logically occupied.
+    // If a mutable repository exists but record 1 is absent, MC_fsRemove has
+    // just created the tombstone required to mask the package copy; that state
+    // is intentionally writable by the replacement rename.
+    if destination_has_record || (destination_packaged && !destination_repo_exists) {{
+        tracing::warn!(
+            "MC_fsRename destination occupied: {{new_name:?}} packaged={{destination_packaged}} repo={{destination_repo_exists}} record={{destination_has_record}}"
+        );
         return Ok(-22);
     }}
 
-    // The overwrite source is the mutable temporary stream just written by
-    // Inotia. Do not fall back to packaged P data here: besides being the wrong
-    // KTF semantic, doing so requires a second mutable context borrow while the
-    // repository is borrowed. A missing temp store is therefore a real error.
     if !system.platform().database_repository().exists(&old_name, &pid).await {{
         tracing::warn!("MC_fsRename mutable source missing: {{old_name:?}}");
         return Ok(-12);
@@ -121,7 +125,7 @@ pub async fn list_record_or_rename_ktf(
 
     let mut destination = system.platform().database_repository().open(&new_name, &pid).await;
     if !destination.set(1, &data).await {{
-        system.platform().database_repository().delete(&new_name, &pid).await;
+        tracing::warn!("MC_fsRename failed writing destination {{new_name:?}}");
         return Ok(-22);
     }}
     system.platform().database_repository().delete(&old_name, &pid).await;
