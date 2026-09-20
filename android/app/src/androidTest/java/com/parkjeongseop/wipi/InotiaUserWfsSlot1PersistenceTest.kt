@@ -23,7 +23,6 @@ class InotiaUserWfsSlot1PersistenceTest {
         val context = inst.targetContext
         val testContext = inst.context
         WipiNative.init(context)
-
         val archive = testContext.assets.open("inotia1_flat.zip").use { it.readBytes() }
         val originalWfs = testContext.assets.open("inotia_user_slot1.wfs").use { it.readBytes() }
         val archiveIdentity = shaBytes(archive)
@@ -31,11 +30,9 @@ class InotiaUserWfsSlot1PersistenceTest {
         val fixtureIdentityRebound = !originalIdentity.contentEquals(archiveIdentity)
         val wfs = rebindFixtureIdentity(originalWfs, archive)
         val entry = entry(context.filesDir, archive, reset = true)
-
         val decoded = SaveBackup.decodeForTest(wfs, archive).associate { it.key to it.data }
         assertTrue("user WFS has no db/save0.dat", decoded["db/save0.dat"]?.isNotEmpty() == true)
         assertTrue("user WFS has no db/prefs", decoded["db/prefs"]?.isNotEmpty() == true)
-
         val imported = SaveBackup.importKtf(entry, wfs)
         val saveFile = File(entry.dataDir, "db/PD005362/save0.dat/1")
         val prefsFile = File(entry.dataDir, "db/PD005362/prefs/1")
@@ -44,17 +41,14 @@ class InotiaUserWfsSlot1PersistenceTest {
         assertEquals(sha(decoded.getValue("db/save0.dat")), sha(saveFile.readBytes()))
         assertEquals(sha(decoded.getValue("db/prefs")), sha(prefsFile.readBytes()))
         val importedSha = sha(saveFile.readBytes())
-
         assertTrue(WipiNative.nativeStart(archive, entry.filename, entry.dataDir.absolutePath, ""))
         continueSlot1()
         val gameplay = capture(6000)
         frame(context.cacheDir, "user-wfs-imported-slot1-gameplay.png", gameplay)
         assertTrue("existing SLOT 1 did not load: ${error()}", error() == null)
-
         repeat(3) { press("RIGHT") }
         repeat(2) { press("DOWN") }
         waitPump(1500)
-
         saveFromGameplay(context.cacheDir)
         val saveResult = capture(3500)
         frame(context.cacheDir, "user-wfs-overwrite-result.png", saveResult)
@@ -62,18 +56,8 @@ class InotiaUserWfsSlot1PersistenceTest {
         assertTrue("overwrite removed save0.dat", saveFile.isFile && saveFile.length() > 0)
         val committedSha = sha(saveFile.readBytes())
         assertNotEquals("save0.dat bytes did not update after real in-game overwrite", importedSha, committedSha)
-
         File(context.filesDir, "inotia-user-slot1-phase1.txt").writeText(
-            "wfsBytes=${originalWfs.size}\n" +
-                "fixtureIdentityRebound=$fixtureIdentityRebound\n" +
-                "importEntries=${imported.entryCount}\n" +
-                "importTotalBytes=${imported.totalBytes}\n" +
-                "importedSaveSha256=$importedSha\n" +
-                "committedSaveSha256=$committedSha\n" +
-                "saveBytes=${saveFile.length()}\n" +
-                "prefsBytes=${prefsFile.length()}\n" +
-                "slot1LoadSucceeded=true\n" +
-                "overwriteSucceeded=true\n"
+            "wfsBytes=${originalWfs.size}\nfixtureIdentityRebound=$fixtureIdentityRebound\nimportEntries=${imported.entryCount}\nimportTotalBytes=${imported.totalBytes}\nimportedSaveSha256=$importedSha\ncommittedSaveSha256=$committedSha\nsaveBytes=${saveFile.length()}\nprefsBytes=${prefsFile.length()}\nslot1LoadSucceeded=true\noverwriteSucceeded=true\n"
         )
         File(context.filesDir, "inotia-force-stop-ready.flag").writeText(committedSha)
         println("INOTIA_USER_WFS_PHASE1_READY imported=$importedSha committed=$committedSha bytes=${saveFile.length()} rebound=$fixtureIdentityRebound")
@@ -124,8 +108,8 @@ class InotiaUserWfsSlot1PersistenceTest {
     }
 
     private fun saveFromGameplay(dir: File) {
-        // Inotia KTF: left soft key opens the minimap. The system/menu entry is the right soft key.
-        press("SOFT_R")
+        // Screenshot evidence: SOFT_R opens the minimap. SOFT_L opens the gameplay/system menu.
+        press("SOFT_L")
         frame(dir, "user-wfs-menu-open.png", capture(1200))
         repeat(5) { press("RIGHT") }
         frame(dir, "user-wfs-system-tab.png", capture(900))
