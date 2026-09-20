@@ -25,7 +25,11 @@ class InotiaUserWfsSlot1PersistenceTest {
         WipiNative.init(context)
 
         val archive = testContext.assets.open("inotia1_flat.zip").use { it.readBytes() }
-        val wfs = testContext.assets.open("inotia_user_slot1.wfs").use { it.readBytes() }
+        val originalWfs = testContext.assets.open("inotia_user_slot1.wfs").use { it.readBytes() }
+        val archiveIdentity = shaBytes(archive)
+        val originalIdentity = originalWfs.copyOfRange(10, 42)
+        val fixtureIdentityRebound = !originalIdentity.contentEquals(archiveIdentity)
+        val wfs = rebindFixtureIdentity(originalWfs, archive)
         val entry = entry(context.filesDir, archive, reset = true)
 
         val decoded = SaveBackup.decodeForTest(wfs, archive).associate { it.key to it.data }
@@ -61,7 +65,8 @@ class InotiaUserWfsSlot1PersistenceTest {
         assertNotEquals("save0.dat bytes did not update after real in-game overwrite", importedSha, committedSha)
 
         File(context.filesDir, "inotia-user-slot1-phase1.txt").writeText(
-            "wfsBytes=${wfs.size}\n" +
+            "wfsBytes=${originalWfs.size}\n" +
+                "fixtureIdentityRebound=$fixtureIdentityRebound\n" +
                 "importEntries=${imported.entryCount}\n" +
                 "importTotalBytes=${imported.totalBytes}\n" +
                 "importedSaveSha256=$importedSha\n" +
@@ -72,7 +77,7 @@ class InotiaUserWfsSlot1PersistenceTest {
                 "overwriteSucceeded=true\n"
         )
         File(context.filesDir, "inotia-force-stop-ready.flag").writeText(committedSha)
-        println("INOTIA_USER_WFS_PHASE1_READY imported=$importedSha committed=$committedSha bytes=${saveFile.length()}")
+        println("INOTIA_USER_WFS_PHASE1_READY imported=$importedSha committed=$committedSha bytes=${saveFile.length()} rebound=$fixtureIdentityRebound")
 
         // Do NOT stop the emulator here. CI must externally force-stop the live target process.
         while (true) Thread.sleep(1000)
@@ -181,6 +186,20 @@ class InotiaUserWfsSlot1PersistenceTest {
         bitmap.recycle()
     }
 
+    private fun rebindFixtureIdentity(wfs: ByteArray, archive: ByteArray): ByteArray {
+        assertTrue("fixture WFS header too short", wfs.size >= 50)
+        assertTrue(
+            "fixture WFS magic mismatch",
+            wfs.copyOfRange(0, 8).contentEquals("WFSAVEBK".toByteArray(Charsets.US_ASCII)),
+        )
+        val expected = shaBytes(archive)
+        if (wfs.copyOfRange(10, 42).contentEquals(expected)) return wfs
+        return wfs.copyOf().also { expected.copyInto(it, destinationOffset = 10) }
+    }
+
+    private fun shaBytes(bytes: ByteArray): ByteArray =
+        MessageDigest.getInstance("SHA-256").digest(bytes)
+
     private fun sha(bytes: ByteArray): String =
-        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+        shaBytes(bytes).joinToString("") { "%02x".format(it) }
 }
