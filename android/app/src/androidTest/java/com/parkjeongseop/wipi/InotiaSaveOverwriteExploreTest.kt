@@ -35,14 +35,13 @@ class InotiaSaveOverwriteExploreTest {
         waitAndPump(6000); press("OK")
         waitAndPump(8000)
 
-        // Default character on the character-selection screen.
+        // Confirm the default character, then use the game's on-screen # SKIP control.
+        // The previous test kept pressing OK and was still inside the intro when it
+        // attempted to open the System menu, which produced a false-positive green run.
         press("OK")
-        // Advance intro/dialogue until normal gameplay is expected. Extra OK presses are
-        // harmless once gameplay starts and let this survive timing differences.
-        repeat(14) {
-            waitAndPump(1400)
-            press("OK")
-        }
+        waitAndPump(2500)
+        press("#")
+        waitAndPump(8000)
         val gameplay = captureAfterDelay(3000)
         saveFrame(context.cacheDir, "inotia-save-gameplay.png", gameplay)
 
@@ -51,8 +50,7 @@ class InotiaSaveOverwriteExploreTest {
         val beforeBytes = if (beforeExists) saveFile.readBytes() else ByteArray(0)
         val beforeSha = sha256(beforeBytes)
 
-        // Old handset UI: left soft key opens the in-game menu. Step right across tabs;
-        // the user-provided screenshots show System near the right edge of the tab bar.
+        // Open the in-game menu and move to the System tab.
         press("SOFT_L")
         val menu0 = captureAfterDelay(1500)
         saveFrame(context.cacheDir, "inotia-save-menu0.png", menu0)
@@ -63,7 +61,10 @@ class InotiaSaveOverwriteExploreTest {
         val systemList = captureAfterDelay(1500)
         saveFrame(context.cacheDir, "inotia-save-system-list.png", systemList)
 
-        // Save is the first item in the System list according to the real-device UI.
+        // Save is the first item. A following OK is harmless if save is immediate and
+        // also handles the confirmation dialog on builds that display one.
+        press("OK")
+        waitAndPump(1200)
         press("OK")
         val saveResult = captureAfterDelay(4000)
         saveFrame(context.cacheDir, "inotia-save-result.png", saveResult)
@@ -88,6 +89,12 @@ class InotiaSaveOverwriteExploreTest {
                 "--- data tree ---\n$tree\n"
         )
         println("INOTIA_SAVE_EXPLORE before=$beforeExists/${beforeBytes.size}/$beforeSha after=$afterExists/${afterBytes.size}/$afterSha error=${afterError ?: "none"}")
+
+        // Do not allow a green workflow unless a real Inotia save slot was actually
+        // materialized by the in-game Save command.
+        assertTrue("Inotia Save command did not create save0.dat", afterExists)
+        assertTrue("Inotia save0.dat is empty", afterBytes.isNotEmpty())
+        assertTrue("Inotia reported a native error after Save: ${afterError ?: "none"}", afterError == null)
         WipiNative.nativeStop()
     }
 
