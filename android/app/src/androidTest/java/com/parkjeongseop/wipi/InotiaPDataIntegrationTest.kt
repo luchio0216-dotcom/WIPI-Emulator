@@ -35,16 +35,22 @@ class InotiaPDataIntegrationTest {
 
         // Main menu defaults to scenario mode. The former storage warning occurred here.
         pressOk()
-        val scenarioFrame = captureAfterDelay(5000); val scenarioError = pendingError(); saveFrame(context.cacheDir, "inotia-after-ok.png", scenarioFrame)
+        val scenarioFrame = captureAfterDelay(5000); val scenarioError = pendingError()
 
         // Scenario submenu defaults to Continue. Move once to New Game and confirm.
         pressDown(); pressOk()
+        val slotFrame = captureAfterDelay(6000); val slotError = pendingError(); saveFrame(context.cacheDir, "inotia-after-ok.png", slotFrame)
+
+        // New-game flow now shows the save-slot selector. Confirm SLOT 1 and capture the
+        // next screen. This is the decisive step for the user's requested character
+        // selection/new-game proof; do not stop at the slot selector itself.
+        pressOk()
         val characterFrame = captureAfterDelay(8000); val characterError = pendingError(); saveFrame(context.cacheDir, "inotia-character.png", characterFrame)
 
         val tree = summarizeDataTree(entry.dataDir)
         val digest = MessageDigest.getInstance("SHA-256").digest(fullZip).joinToString("") { "%02x".format(it) }
         val stage2 = "aid=010100D3\npid=PD005362\nmode=complete-package+embedded-subscriber-fallback\nsubscriberForInotia=01012349876\npackageSha256=$digest\npackageBytes=${fullZip.size}\n--- final data tree ---\n$tree\n"
-        val report = "titleError=${titleError ?: "none"}\nmenuError=${menuError ?: "none"}\nscenarioError=${scenarioError ?: "none"}\ncharacterError=${characterError ?: "none"}\ntitleToMenuDiff=${diffRatio(titleFrame, menuFrame)}\nmenuToScenarioDiff=${diffRatio(menuFrame, scenarioFrame)}\nscenarioToCharacterDiff=${diffRatio(scenarioFrame, characterFrame)}\n"
+        val report = "titleError=${titleError ?: "none"}\nmenuError=${menuError ?: "none"}\nscenarioError=${scenarioError ?: "none"}\nslotError=${slotError ?: "none"}\ncharacterError=${characterError ?: "none"}\ntitleToMenuDiff=${diffRatio(titleFrame, menuFrame)}\nmenuToScenarioDiff=${diffRatio(menuFrame, scenarioFrame)}\nscenarioToSlotDiff=${diffRatio(scenarioFrame, slotFrame)}\nslotToCharacterDiff=${diffRatio(slotFrame, characterFrame)}\n"
         File(context.cacheDir, "inotia-stage2.txt").writeText(stage2); File(context.cacheDir, "inotia-report.txt").writeText(report)
         println("INOTIA_STAGE2_BEGIN"); print(stage2); println("INOTIA_STAGE2_END"); println("INOTIA_REPORT_BEGIN"); print(report); println("INOTIA_REPORT_END")
         WipiNative.nativeStop()
