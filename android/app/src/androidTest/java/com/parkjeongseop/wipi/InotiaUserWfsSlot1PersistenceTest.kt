@@ -56,7 +56,7 @@ class InotiaUserWfsSlot1PersistenceTest {
         repeat(2) { press("DOWN") }
         waitPump(1500)
 
-        saveFromGameplay()
+        saveFromGameplay(context.cacheDir)
         val saveResult = capture(3500)
         frame(context.cacheDir, "user-wfs-overwrite-result.png", saveResult)
         assertTrue("System/Save raised native error: ${error()}", error() == null)
@@ -142,11 +142,21 @@ class InotiaUserWfsSlot1PersistenceTest {
         waitPump(8000)
     }
 
-    private fun saveFromGameplay() {
-        press("SOFT_L"); waitPump(1200)
+    private fun saveFromGameplay(dir: File) {
+        press("SOFT_L")
+        frame(dir, "user-wfs-menu-open.png", capture(1200))
+
         repeat(5) { press("RIGHT") }
-        waitPump(900); press("OK"); waitPump(1200)
-        press("OK"); waitPump(1400); press("OK"); waitPump(2200)
+        frame(dir, "user-wfs-system-tab.png", capture(900))
+
+        press("OK")
+        frame(dir, "user-wfs-system-list.png", capture(1200))
+
+        press("OK")
+        frame(dir, "user-wfs-save-selected.png", capture(1400))
+
+        press("OK")
+        frame(dir, "user-wfs-save-after-confirm.png", capture(2200))
     }
 
     private fun press(key: String) {
