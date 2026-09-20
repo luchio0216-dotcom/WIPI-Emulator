@@ -108,10 +108,12 @@ class InotiaUserWfsSlot1PersistenceTest {
     }
 
     private fun saveFromGameplay(dir: File) {
-        // Runs #31/#32 proved both soft-key guesses landed on the minimap.
-        // Probe the handset CLEAR/back key instead: on many KTF RPGs this is the
-        // gameplay menu key. Keep phase screenshots so the next run has hard evidence.
-        press("CLR")
+        // Evidence from run #33: CLR was a no-op in gameplay, while #31/#32 soft-key
+        // guesses reached the minimap. Probe the center/OK handset key next. On KTF
+        // action RPGs the center key commonly opens the tabbed gameplay menu; if this
+        // is correct, five RIGHT presses should land on the System tab shown by the
+        // user's reference screenshot. Preserve every phase as hard evidence.
+        press("OK")
         frame(dir, "user-wfs-menu-open.png", capture(1200))
         repeat(5) { press("RIGHT") }
         frame(dir, "user-wfs-system-tab.png", capture(900))
@@ -119,6 +121,7 @@ class InotiaUserWfsSlot1PersistenceTest {
         frame(dir, "user-wfs-system-list.png", capture(1200))
         press("OK")
         frame(dir, "user-wfs-save-selected.png", capture(2200))
+        press("OK")
         frame(dir, "user-wfs-save-after-confirm.png", capture(1200))
     }
 
