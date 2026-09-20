@@ -22,11 +22,29 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      - name: Prepare Inotia package
+      - name: Prepare Inotia package and private user WFS
         shell: bash
+        env:
+          INOTIA_USER_WFS_B64: ${{ secrets.INOTIA_USER_WFS_B64 }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/inotia android/app/src/androidTest/assets
+          if [ -z "${INOTIA_USER_WFS_B64:-}" ]; then
+            echo 'Missing GitHub Actions secret INOTIA_USER_WFS_B64' >&2
+            exit 2
+          fi
+          printf '%s' "$INOTIA_USER_WFS_B64" | base64 --decode > android/app/src/androidTest/assets/inotia_user_slot1.wfs
+          python3 - <<'PY'
+          import hashlib, pathlib
+          p=pathlib.Path('android/app/src/androidTest/assets/inotia_user_slot1.wfs')
+          b=p.read_bytes()
+          assert len(b)==703, len(b)
+          assert hashlib.sha256(b).hexdigest()=='32f4404f36930317a8a102b079e6da105fc8628837e53a7606dbf8a9b81ec918'
+          assert b[:8]==b'WFSAVEBK'
+          print('Private WFS fixture verified:', len(b), 'bytes')
+          PY
+          unset INOTIA_USER_WFS_B64
+
           curl -fsSL -A 'Mozilla/5.0' 'https://dubigame.tistory.com/135' -o /tmp/inotia/page.html
           python3 - <<'PY'
           import html,re,subprocess,pathlib,zipfile
@@ -53,6 +71,7 @@ jobs:
       - name: Build patched x86_64 JNI
         shell: bash
         run: |
+          set -euo pipefail
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
           rustup target add x86_64-linux-android
@@ -75,7 +94,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm || true
 
-      - name: Generate WFS in game, import, overwrite, restart and reload
+      - name: Import real WFS, overwrite SLOT 1, force-stop live process, relaunch and reload
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
@@ -85,24 +104,91 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
           script: |
-            set -eu
+            set -euo pipefail
             gradle -p android :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace
             APP_APK="$(find "$PWD/android/app/build/outputs/apk" -type f -name '*.apk' ! -path '*/androidTest/*' -print -quit)"
             TEST_APK="$(find "$PWD/android/app/build/outputs/apk" -type f -name '*.apk' -path '*/androidTest/*' -print -quit)"
-            test -f "$APP_APK"; test -f "$TEST_APK"
-            adb install -r "$APP_APK"; adb install -r "$TEST_APK"; adb logcat -c || true
+            test -f "$APP_APK"
+            test -f "$TEST_APK"
+            adb install -r "$APP_APK"
+            adb install -r "$TEST_APK"
+
+            PKG='com.parkjeongseop.wipi.pdata4'
+            RUNNER='com.parkjeongseop.wipi.pdata4.test/androidx.test.runner.AndroidJUnitRunner'
+            CLASS='com.parkjeongseop.wipi.InotiaUserWfsSlot1PersistenceTest'
             mkdir -p inotia-save-result
-            set +e
-            adb shell am instrument -w -r -e class com.parkjeongseop.wipi.InotiaSyntheticWfsSaveTest#syntheticWfsImportOverwriteAndReload com.parkjeongseop.wipi.pdata4.test/androidx.test.runner.AndroidJUnitRunner > /tmp/instrumentation.txt 2>&1
-            rc=$?
-            set -e
-            cat /tmp/instrumentation.txt
-            cp /tmp/instrumentation.txt inotia-save-result/instrumentation.txt
-            for f in synthetic-first-gameplay.png synthetic-baseline-save.png synthetic-imported-gameplay.png synthetic-overwrite-result.png synthetic-reloaded-gameplay.png synthetic-wfs-save-report.txt; do
-              adb exec-out run-as com.parkjeongseop.wipi.pdata4 cat "cache/$f" > "inotia-save-result/$f" 2>/dev/null || true
+            adb shell pm clear "$PKG" >/dev/null
+            adb logcat -c || true
+
+            # Phase 1 deliberately stays alive after a verified real SLOT 1 overwrite.
+            adb shell am instrument -w -r -e class "$CLASS#importAndOverwriteSlot1ThenWaitForForceStop" "$RUNNER" > /tmp/phase1.txt 2>&1 &
+            PHASE1_HOST_PID=$!
+            READY=0
+            for i in $(seq 1 180); do
+              if adb exec-out run-as "$PKG" cat files/inotia-force-stop-ready.flag > /tmp/committed-sha.txt 2>/dev/null; then
+                READY=1
+                break
+              fi
+              if ! kill -0 "$PHASE1_HOST_PID" 2>/dev/null; then
+                echo 'Phase 1 instrumentation exited before force-stop readiness' >&2
+                cat /tmp/phase1.txt || true
+                exit 1
+              fi
+              sleep 2
             done
+            if [ "$READY" -ne 1 ]; then
+              echo 'Timed out waiting for verified SLOT 1 overwrite' >&2
+              cat /tmp/phase1.txt || true
+              exit 1
+            fi
+
+            adb exec-out run-as "$PKG" cat files/inotia-user-slot1-phase1.txt > inotia-save-result/phase1-report.txt
+            for f in user-wfs-imported-slot1-gameplay.png user-wfs-overwrite-result.png; do
+              adb exec-out run-as "$PKG" cat "cache/$f" > "inotia-save-result/$f" 2>/dev/null || true
+            done
+
+            PID_BEFORE="$(adb shell pidof "$PKG" | tr -d '\r')"
+            if [ -z "$PID_BEFORE" ]; then
+              echo 'Target process was not alive before force-stop' >&2
+              exit 1
+            fi
+            echo "pidBeforeForceStop=$PID_BEFORE" | tee inotia-save-result/force-stop.txt
+            echo "committedSha256=$(cat /tmp/committed-sha.txt | tr -d '\r\n')" >> inotia-save-result/force-stop.txt
+
+            adb shell am force-stop "$PKG"
+            PID_GONE=0
+            for i in $(seq 1 30); do
+              if [ -z "$(adb shell pidof "$PKG" | tr -d '\r')" ]; then
+                PID_GONE=1
+                break
+              fi
+              sleep 1
+            done
+            if [ "$PID_GONE" -ne 1 ]; then
+              echo 'Target PID survived force-stop' >&2
+              exit 1
+            fi
+            echo 'pidAfterForceStop=none' >> inotia-save-result/force-stop.txt
+            wait "$PHASE1_HOST_PID" || true
+            cp /tmp/phase1.txt inotia-save-result/phase1-instrumentation.txt || true
+
+            # Phase 2 is a new process. It must reload the already-overwritten SLOT 1 without importing again.
+            set +e
+            adb shell am instrument -w -r -e class "$CLASS#reloadPersistedSlotAfterForceStop" "$RUNNER" > /tmp/phase2.txt 2>&1
+            PHASE2_RC=$?
+            set -e
+            cat /tmp/phase2.txt
+            cp /tmp/phase2.txt inotia-save-result/phase2-instrumentation.txt
+            adb exec-out run-as "$PKG" cat cache/user-wfs-reloaded-slot1-gameplay.png > inotia-save-result/user-wfs-reloaded-slot1-gameplay.png 2>/dev/null || true
+            adb exec-out run-as "$PKG" cat cache/user-wfs-final-report.txt > inotia-save-result/final-report.txt 2>/dev/null || true
             adb logcat -d > inotia-save-result/logcat.txt 2>/dev/null || true
-            if [ "$rc" -ne 0 ] || grep -Eq 'FAILURES!!!|INSTRUMENTATION_STATUS_CODE: -2' /tmp/instrumentation.txt || ! grep -Eq 'OK \([0-9]+ test' /tmp/instrumentation.txt; then exit 1; fi
+
+            if [ "$PHASE2_RC" -ne 0 ]; then exit 1; fi
+            if grep -Eq 'FAILURES!!!|INSTRUMENTATION_STATUS_CODE: -2|INSTRUMENTATION_CODE: -1' /tmp/phase2.txt; then exit 1; fi
+            if ! grep -Eq 'OK \(1 test' /tmp/phase2.txt; then exit 1; fi
+            if ! grep -q 'forceStopPersistence=true' inotia-save-result/final-report.txt; then exit 1; fi
+            if ! grep -q 'slot1ReloadSucceeded=true' inotia-save-result/final-report.txt; then exit 1; fi
+            if ! grep -q 'overwriteSucceeded=true' inotia-save-result/phase1-report.txt; then exit 1; fi
 
       - name: Upload save evidence
         if: always()
