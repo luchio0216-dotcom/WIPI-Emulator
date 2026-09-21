@@ -33,7 +33,7 @@ class InotiaCashShopProbeTest {
         frame(context.cacheDir, "cash-probe-00-gameplay.png", capture(4500))
 
         // User-confirmed keypad semantics: 5=OK, 8=down, 4=left, CLR=menu.
-        // System menu -> 4th row (Cash item purchase) -> activate.
+        // System menu -> 4th row (Cash item purchase) -> activate -> accept charge prompt.
         press("CLR")
         frame(context.cacheDir, "cash-probe-01-clr.png", capture(1000))
         press("4")
@@ -45,15 +45,17 @@ class InotiaCashShopProbeTest {
             frame(context.cacheDir, "cash-probe-0${4 + index}-down${index + 1}.png", capture(700))
         }
         press("5")
-        frame(context.cacheDir, "cash-probe-07-activate.png", capture(1800))
-        waitPump(6000)
-        frame(context.cacheDir, "cash-probe-08-after-wait.png", capture(1000))
+        frame(context.cacheDir, "cash-probe-07-charge-prompt.png", capture(1500))
+        press("5") // default selection is Yes
+        frame(context.cacheDir, "cash-probe-08-confirm-yes.png", capture(1800))
+        waitPump(8000)
+        frame(context.cacheDir, "cash-probe-09-after-wait.png", capture(1000))
 
         val kind = IntArray(1)
         val nativeError = WipiNative.nativeGetError(kind)
         File(context.cacheDir, "cash-probe-report.txt").writeText(
             buildString {
-                appendLine("sequence=CLR,4,5,8,8,8,5")
+                appendLine("sequence=CLR,4,5,8,8,8,5,5")
                 appendLine("nativeErrorKind=${if (nativeError == null) "none" else kind[0]}")
                 appendLine("nativeError=${nativeError ?: "none"}")
                 appendLine("pollExit=${WipiNative.nativePollExit()}")
