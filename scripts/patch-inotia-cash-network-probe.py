@@ -3,7 +3,8 @@
 
 AID-scoped only. No Internet access is implemented. The first connect callback is
 reported successful, MC_netSocket gets a synthetic local descriptor, and the
-legacy address conversion gets loopback so the next cash-shop API becomes observable.
+legacy address conversion is implemented from the guest's dotted-quad string so
+the next cash-shop API becomes observable without contacting the retired server.
 """
 from pathlib import Path
 import os
@@ -40,6 +41,55 @@ fn gen_inotia_net_probe_stub(id: WIPICWord, name: &'static str, success: u32) ->
     }};
     body.into_body()
 }}
+
+fn gen_inotia_inet_addr_int_probe(id: WIPICWord, name: &'static str) -> WIPICMethodBody {{
+    let body = move |context: &mut dyn WIPICContext, addr: WIPICWord| {{
+        let is_inotia = context.system().aid() == "{AID}";
+        let parsed = if is_inotia {{
+            let mut bytes = [0u8; 16];
+            let mut len = 0usize;
+            let mut read_error = false;
+            while len < 15 {{
+                let mut one = [0u8; 1];
+                if wie_util::ByteRead::read_bytes(context, addr.wrapping_add(len as u32), &mut one).is_err() {{
+                    read_error = true;
+                    break;
+                }}
+                if one[0] == 0 {{ break; }}
+                bytes[len] = one[0];
+                len += 1;
+            }}
+            if read_error {{
+                None
+            }} else {{
+                core::str::from_utf8(&bytes[..len]).ok().and_then(|text| {{
+                    let mut out = 0u32;
+                    let mut count = 0usize;
+                    for (index, part) in text.split('.').enumerate() {{
+                        if index >= 4 {{ return None; }}
+                        let octet = part.parse::<u8>().ok()?;
+                        out |= (octet as u32) << (8 * index);
+                        count += 1;
+                    }}
+                    if count == 4 {{
+                        tracing::warn!("Inotia cash probe: MC_utilInetAddrInt({{text}}) -> {{out:#x}} (offline; no host connection)");
+                        Some(out)
+                    }} else {{ None }}
+                }})
+            }}
+        }} else {{
+            None
+        }};
+        async move {{
+            if is_inotia {{
+                Ok::<u32, WieError>(parsed.unwrap_or(u32::MAX))
+            }} else {{
+                Err(WieError::Unimplemented(format!("{{id}}: {{name}}")))
+            }}
+        }}
+    }};
+    body.into_body()
+}}
 '''
 
 found_net = False
@@ -65,9 +115,7 @@ for root in roots:
 
         replacements = [
             ('        gen_stub(2, "MC_netSocket"),', '        gen_inotia_net_probe_stub(2, "MC_netSocket", 1),'),
-            # 127.0.0.1: keep the defunct cash-shop flow strictly local while
-            # exposing the next connect/write/read call made by the client.
-            ('        gen_stub(4, "MC_utilInetAddrInt"),', '        gen_inotia_net_probe_stub(4, "MC_utilInetAddrInt", 0x7f000001),'),
+            ('        gen_stub(4, "MC_utilInetAddrInt"),', '        gen_inotia_inet_addr_int_probe(4, "MC_utilInetAddrInt"),'),
         ]
         for old, new in replacements:
             if new not in text:
