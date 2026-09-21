@@ -27,12 +27,15 @@ connect_new = f'''            let result = if context.system().aid() == "{AID}" 
 
 helper = f'''
 fn gen_inotia_net_probe_stub(id: WIPICWord, name: &'static str, success: u32) -> WIPICMethodBody {{
-    let body = move |context: &mut dyn WIPICContext| async move {{
-        if context.system().aid() == "{AID}" {{
-            tracing::warn!("Inotia cash probe: {{name}} id={{id}} -> synthetic {{success:#x}}");
-            Ok::<u32, WieError>(success)
-        }} else {{
-            Err(WieError::Unimplemented(format!("{{id}}: {{name}}")))
+    let body = move |context: &mut dyn WIPICContext| {{
+        let is_inotia = context.system().aid() == "{AID}";
+        async move {{
+            if is_inotia {{
+                tracing::warn!("Inotia cash probe: {{name}} id={{id}} -> synthetic {{success:#x}}");
+                Ok::<u32, WieError>(success)
+            }} else {{
+                Err(WieError::Unimplemented(format!("{{id}}: {{name}}")))
+            }}
         }}
     }};
     body.into_body()
