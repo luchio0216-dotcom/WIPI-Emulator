@@ -34,14 +34,22 @@ cat /tmp/cash-probe.txt
 cp /tmp/cash-probe.txt "$RESULT_DIR/instrumentation.txt"
 collect
 
-# The latest failure is a guest PC=0 immediately after MC_utilInetAddrInt with
-# callers at Base+0xc470/+0xc6c4. Capture only narrow byte windows from the
-# public game package for disassembly/ABI diagnosis; never persist client.bin.
+# Diagnose the PC=0 call site without persisting any game binary. The flattened
+# package does not necessarily call its executable client.bin, so first print
+# entry metadata and select an executable-sized candidate that actually covers
+# Base+0xc6c4. Only narrow byte windows are emitted to the evidence artifact.
 python3 - <<'PY' > "$RESULT_DIR/crash-site-bytes.txt" || true
 import zipfile
 z=zipfile.ZipFile('android/app/src/androidTest/assets/inotia1_flat.zip')
-name=next((n for n in z.namelist() if n.lower().endswith('client.bin')),None)
-print('client_entry=',name)
+infos=[i for i in z.infolist() if not i.is_dir()]
+print('entries:')
+for i in infos:
+    print(f'  {i.filename!r} size={i.file_size}')
+preferred=[i for i in infos if i.filename.lower().endswith(('client.bin','.bin','.mod','.exe')) and i.file_size>0xc704]
+covering=[i for i in infos if i.file_size>0xc704]
+candidates=preferred or covering
+name=candidates[0].filename if candidates else None
+print('selected_entry=',repr(name))
 if name:
     b=z.read(name)
     for off in (0xc430,0xc470,0xc6a0,0xc6c4):
