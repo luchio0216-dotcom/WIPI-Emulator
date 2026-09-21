@@ -2,9 +2,9 @@
 """Advance Inotia 1 through defunct KTF cash-shop network gates for offline probing.
 
 AID-scoped only. No Internet access is implemented. The first connect callback is
-reported successful, MC_netSocket gets a synthetic local descriptor, and the
-legacy address conversion is implemented from the guest's dotted-quad string so
-the next cash-shop API becomes observable without contacting the retired server.
+reported successful, MC_netSocket gets a synthetic local descriptor, legacy
+address conversion reads the guest dotted-quad string, and socket-connect is
+completed locally so the next request/write API can be observed.
 """
 from pathlib import Path
 import os
@@ -34,6 +34,24 @@ fn gen_inotia_net_probe_stub(id: WIPICWord, name: &'static str, success: u32) ->
             if is_inotia {{
                 tracing::warn!("Inotia cash probe: {{name}} id={{id}} -> synthetic {{success:#x}}");
                 Ok::<u32, WieError>(success)
+            }} else {{
+                Err(WieError::Unimplemented(format!("{{id}}: {{name}}")))
+            }}
+        }}
+    }};
+    body.into_body()
+}}
+
+fn gen_inotia_socket_connect_probe(id: WIPICWord, name: &'static str) -> WIPICMethodBody {{
+    let body = move |context: &mut dyn WIPICContext, fd: WIPICWord, addr: WIPICWord, port: WIPICWord, cb: WIPICWord, param: WIPICWord| {{
+        let is_inotia = context.system().aid() == "{AID}";
+        async move {{
+            if is_inotia {{
+                tracing::warn!("Inotia cash probe: MC_netSocketConnect fd={{fd:#x}} addr={{addr:#x}} port={{port}} cb={{cb:#x}} param={{param:#x}} -> local success; no external socket");
+                if cb != 0 {{
+                    context.call_function(cb, &[0, param]).await?;
+                }}
+                Ok::<u32, WieError>(0)
             }} else {{
                 Err(WieError::Unimplemented(format!("{{id}}: {{name}}")))
             }}
@@ -115,6 +133,7 @@ for root in roots:
 
         replacements = [
             ('        gen_stub(2, "MC_netSocket"),', '        gen_inotia_net_probe_stub(2, "MC_netSocket", 1),'),
+            ('        gen_stub(3, "MC_netSocketConnect"),', '        gen_inotia_socket_connect_probe(3, "MC_netSocketConnect"),'),
             ('        gen_stub(4, "MC_utilInetAddrInt"),', '        gen_inotia_inet_addr_int_probe(4, "MC_utilInetAddrInt"),'),
         ]
         for old, new in replacements:
@@ -123,7 +142,7 @@ for root in roots:
                     raise SystemExit(f"method table entry not found in {path}: {old.strip()}")
                 text = text.replace(old, new, 1)
         path.write_text(text)
-        print(f"inotia cash socket/address probe patched: {path}")
+        print(f"inotia cash socket/connect/address probe patched: {path}")
         found_table = True
 
 if not found_net or not found_table:
