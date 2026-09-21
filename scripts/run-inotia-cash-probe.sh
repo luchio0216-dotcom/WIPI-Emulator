@@ -34,8 +34,26 @@ cat /tmp/cash-probe.txt
 cp /tmp/cash-probe.txt "$RESULT_DIR/instrumentation.txt"
 collect
 
+# The latest failure is a guest PC=0 immediately after MC_utilInetAddrInt with
+# callers at Base+0xc470/+0xc6c4. Capture only narrow byte windows from the
+# public game package for disassembly/ABI diagnosis; never persist client.bin.
+python3 - <<'PY' > "$RESULT_DIR/crash-site-bytes.txt" || true
+import zipfile
+z=zipfile.ZipFile('android/app/src/androidTest/assets/inotia1_flat.zip')
+name=next((n for n in z.namelist() if n.lower().endswith('client.bin')),None)
+print('client_entry=',name)
+if name:
+    b=z.read(name)
+    for off in (0xc430,0xc470,0xc6a0,0xc6c4):
+        lo=max(0,off-32); hi=min(len(b),off+64)
+        print(f'offset=0x{off:x} range=0x{lo:x}-0x{hi:x}')
+        for p in range(lo,hi,16): print(f'{p:08x}: '+b[p:p+16].hex(' '))
+PY
+
 echo '=== INOTIA CASH PROBE REPORT ==='
 cat "$RESULT_DIR/cash-probe-report.txt" 2>/dev/null || true
+echo '=== INOTIA CASH CRASH SITE BYTES ==='
+cat "$RESULT_DIR/crash-site-bytes.txt" 2>/dev/null || true
 echo '=== INOTIA CASH NETWORK TRACE ==='
 grep -E -i 'Inotia cash probe|MC_net|MC_utilInet|Unimplemented|Invalid memory|Fatal error|pollExit|socket|send|recv|write|read' "$RESULT_DIR/logcat.txt" | tail -n 300 || true
 echo '=== END INOTIA CASH NETWORK TRACE ==='
