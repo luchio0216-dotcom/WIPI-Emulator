@@ -43,14 +43,17 @@ fn gen_inotia_net_probe_stub(id: WIPICWord, name: &'static str, success: u32) ->
 }}
 
 fn gen_inotia_socket_connect_probe(id: WIPICWord, name: &'static str) -> WIPICMethodBody {{
+    // Do not retain the borrowed WIPICContext across this generated async body.
+    // MethodImpl requires a future independent of that borrow; retaining context here
+    // causes a lifetime error before the emulator can run. For this probe we return
+    // synchronous local success and log the callback address/parameter. A later
+    // AID-scoped callback scheduler can be added once the subsequent client behavior
+    // establishes whether this legacy API requires the callback to advance.
     let body = move |context: &mut dyn WIPICContext, fd: WIPICWord, addr: WIPICWord, port: WIPICWord, cb: WIPICWord, param: WIPICWord| {{
         let is_inotia = context.system().aid() == "{AID}";
         async move {{
             if is_inotia {{
-                tracing::warn!("Inotia cash probe: MC_netSocketConnect fd={{fd:#x}} addr={{addr:#x}} port={{port}} cb={{cb:#x}} param={{param:#x}} -> local success; no external socket");
-                if cb != 0 {{
-                    context.call_function(cb, &[0, param]).await?;
-                }}
+                tracing::warn!("Inotia cash probe: MC_netSocketConnect fd={{fd:#x}} addr={{addr:#x}} port={{port}} cb={{cb:#x}} param={{param:#x}} -> local synchronous success; callback deferred; no external socket");
                 Ok::<u32, WieError>(0)
             }} else {{
                 Err(WieError::Unimplemented(format!("{{id}}: {{name}}")))
