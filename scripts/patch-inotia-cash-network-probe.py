@@ -2,8 +2,8 @@
 """Advance Inotia 1 through defunct KTF cash-shop network gates for offline probing.
 
 AID-scoped only. No Internet access is implemented. The first connect callback is
-reported successful, and MC_netSocket gets a synthetic local descriptor so the
-next API/request in the old cash-shop protocol becomes observable.
+reported successful, MC_netSocket gets a synthetic local descriptor, and the
+legacy address conversion gets loopback so the next cash-shop API becomes observable.
 """
 from pathlib import Path
 import os
@@ -62,14 +62,20 @@ for root in roots:
             if anchor not in text:
                 raise SystemExit(f"gen_stub anchor not found in {path}")
             text = text.replace(anchor, anchor + helper, 1)
-        old = '        gen_stub(2, "MC_netSocket"),'
-        new = '        gen_inotia_net_probe_stub(2, "MC_netSocket", 1),'
-        if new not in text:
-            if old not in text:
-                raise SystemExit(f"MC_netSocket table entry not found in {path}")
-            text = text.replace(old, new, 1)
+
+        replacements = [
+            ('        gen_stub(2, "MC_netSocket"),', '        gen_inotia_net_probe_stub(2, "MC_netSocket", 1),'),
+            # 127.0.0.1: keep the defunct cash-shop flow strictly local while
+            # exposing the next connect/write/read call made by the client.
+            ('        gen_stub(4, "MC_utilInetAddrInt"),', '        gen_inotia_net_probe_stub(4, "MC_utilInetAddrInt", 0x7f000001),'),
+        ]
+        for old, new in replacements:
+            if new not in text:
+                if old not in text:
+                    raise SystemExit(f"method table entry not found in {path}: {old.strip()}")
+                text = text.replace(old, new, 1)
         path.write_text(text)
-        print(f"inotia cash socket probe patched: {path}")
+        print(f"inotia cash socket/address probe patched: {path}")
         found_table = True
 
 if not found_net or not found_table:
