@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Advance Inotia 1 through defunct KTF cash-shop network gates for offline probing.
 
-AID-scoped only. No Internet access is implemented. The first connect callback is
-reported successful, MC_netSocket gets a synthetic local descriptor, legacy
-address conversion reads the guest dotted-quad string, and socket-connect is
-completed locally so the next request/write API can be observed.
+AID-scoped only. No Internet access is implemented. MC_netConnect and
+MC_netSocketConnect complete through the guest callbacks, MC_netSocket gets a
+synthetic descriptor, and legacy address conversion only parses the guest IP.
 """
 from pathlib import Path
 import os
@@ -26,6 +25,39 @@ connect_new = f'''            let result = if context.system().aid() == "{AID}" 
             context.call_function(self.cb, &[result, self.param]).await?;
 '''
 
+# Put the socket-connect callback in api/net.rs rather than a generated closure.
+# MethodBody owns the callback state, exactly like upstream MC_netConnect, so no
+# borrowed WIPICContext escapes into a generated async future.
+socket_callback = f'''
+
+pub async fn socket_connect_inotia(
+    context: &mut dyn WIPICContext,
+    fd: WIPICWord,
+    addr: WIPICWord,
+    port: WIPICWord,
+    cb: WIPICWord,
+    param: WIPICWord,
+) -> Result<i32> {{
+    if context.system().aid() != "{AID}" {{
+        return Err(WieError::Unimplemented("3: MC_netSocketConnect".into()));
+    }}
+    tracing::warn!("Inotia cash probe: MC_netSocketConnect fd={{fd:#x}} addr={{addr:#x}} port={{port}} cb={{cb:#x}} param={{param:#x}} -> scheduling local success callback; no external socket");
+
+    struct SocketConnectCallback {{ cb: WIPICWord, param: WIPICWord }}
+    #[async_trait::async_trait]
+    impl MethodBody<WieError> for SocketConnectCallback {{
+        async fn call(&self, context: &mut dyn WIPICContext, _: Box<[WIPICWord]>) -> Result<WIPICResult> {{
+            context.system().sleep(1).await;
+            tracing::warn!("Inotia cash probe: MC_netSocketConnect callback -> success");
+            context.call_function(self.cb, &[0, self.param]).await?;
+            Ok(WIPICResult {{ results: Vec::new() }})
+        }}
+    }}
+    context.spawn(Box::new(SocketConnectCallback {{ cb, param }}))?;
+    Ok(0)
+}}
+'''
+
 helper = f'''
 fn gen_inotia_net_probe_stub(id: WIPICWord, name: &'static str, success: u32) -> WIPICMethodBody {{
     let body = move |context: &mut dyn WIPICContext| {{
@@ -34,27 +66,6 @@ fn gen_inotia_net_probe_stub(id: WIPICWord, name: &'static str, success: u32) ->
             if is_inotia {{
                 tracing::warn!("Inotia cash probe: {{name}} id={{id}} -> synthetic {{success:#x}}");
                 Ok::<u32, WieError>(success)
-            }} else {{
-                Err(WieError::Unimplemented(format!("{{id}}: {{name}}")))
-            }}
-        }}
-    }};
-    body.into_body()
-}}
-
-fn gen_inotia_socket_connect_probe(id: WIPICWord, name: &'static str) -> WIPICMethodBody {{
-    // Do not retain the borrowed WIPICContext across this generated async body.
-    // MethodImpl requires a future independent of that borrow; retaining context here
-    // causes a lifetime error before the emulator can run. For this probe we return
-    // synchronous local success and log the callback address/parameter. A later
-    // AID-scoped callback scheduler can be added once the subsequent client behavior
-    // establishes whether this legacy API requires the callback to advance.
-    let body = move |context: &mut dyn WIPICContext, fd: WIPICWord, addr: WIPICWord, port: WIPICWord, cb: WIPICWord, param: WIPICWord| {{
-        let is_inotia = context.system().aid() == "{AID}";
-        async move {{
-            if is_inotia {{
-                tracing::warn!("Inotia cash probe: MC_netSocketConnect fd={{fd:#x}} addr={{addr:#x}} port={{port}} cb={{cb:#x}} param={{param:#x}} -> local synchronous success; callback deferred; no external socket");
-                Ok::<u32, WieError>(0)
             }} else {{
                 Err(WieError::Unimplemented(format!("{{id}}: {{name}}")))
             }}
@@ -72,25 +83,17 @@ fn gen_inotia_inet_addr_int_probe(id: WIPICWord, name: &'static str) -> WIPICMet
             let mut read_error = false;
             while len < 15 {{
                 let mut one = [0u8; 1];
-                if wie_util::ByteRead::read_bytes(context, addr.wrapping_add(len as u32), &mut one).is_err() {{
-                    read_error = true;
-                    break;
-                }}
+                if wie_util::ByteRead::read_bytes(context, addr.wrapping_add(len as u32), &mut one).is_err() {{ read_error = true; break; }}
                 if one[0] == 0 {{ break; }}
-                bytes[len] = one[0];
-                len += 1;
+                bytes[len] = one[0]; len += 1;
             }}
-            if read_error {{
-                None
-            }} else {{
+            if read_error {{ None }} else {{
                 core::str::from_utf8(&bytes[..len]).ok().and_then(|text| {{
-                    let mut out = 0u32;
-                    let mut count = 0usize;
+                    let mut out = 0u32; let mut count = 0usize;
                     for (index, part) in text.split('.').enumerate() {{
                         if index >= 4 {{ return None; }}
                         let octet = part.parse::<u8>().ok()?;
-                        out |= (octet as u32) << (8 * index);
-                        count += 1;
+                        out |= (octet as u32) << (8 * index); count += 1;
                     }}
                     if count == 4 {{
                         tracing::warn!("Inotia cash probe: MC_utilInetAddrInt({{text}}) -> {{out:#x}} (offline; no host connection)");
@@ -98,15 +101,10 @@ fn gen_inotia_inet_addr_int_probe(id: WIPICWord, name: &'static str) -> WIPICMet
                     }} else {{ None }}
                 }})
             }}
-        }} else {{
-            None
-        }};
+        }} else {{ None }};
         async move {{
-            if is_inotia {{
-                Ok::<u32, WieError>(parsed.unwrap_or(u32::MAX))
-            }} else {{
-                Err(WieError::Unimplemented(format!("{{id}}: {{name}}")))
-            }}
+            if is_inotia {{ Ok::<u32, WieError>(parsed.unwrap_or(u32::MAX)) }}
+            else {{ Err(WieError::Unimplemented(format!("{{id}}: {{name}}"))) }}
         }}
     }};
     body.into_body()
@@ -122,8 +120,13 @@ for root in roots:
             if connect_old not in text:
                 raise SystemExit(f"Expected MC_netConnect callback not found in {path}")
             text = text.replace(connect_old, connect_new, 1)
-            path.write_text(text)
-        print(f"inotia cash connect probe patched: {path}")
+        if socket_callback.strip() not in text:
+            marker = '\npub async fn close(_context: &mut dyn WIPICContext) -> Result<()> {'
+            if marker not in text:
+                raise SystemExit(f"socket callback insertion marker not found in {path}")
+            text = text.replace(marker, socket_callback + marker, 1)
+        path.write_text(text)
+        print(f"inotia cash connect callbacks patched: {path}")
         found_net = True
 
     for path in root.glob("**/wie_ktf/src/runtime/wipi_c/method_table.rs"):
@@ -133,17 +136,22 @@ for root in roots:
             if anchor not in text:
                 raise SystemExit(f"gen_stub anchor not found in {path}")
             text = text.replace(anchor, anchor + helper, 1)
-
         replacements = [
             ('        gen_stub(2, "MC_netSocket"),', '        gen_inotia_net_probe_stub(2, "MC_netSocket", 1),'),
-            ('        gen_stub(3, "MC_netSocketConnect"),', '        gen_inotia_socket_connect_probe(3, "MC_netSocketConnect"),'),
+            ('        gen_stub(3, "MC_netSocketConnect"),', '        net::socket_connect_inotia.into_body(),'),
+            ('        gen_inotia_socket_connect_probe(3, "MC_netSocketConnect"),', '        net::socket_connect_inotia.into_body(),'),
             ('        gen_stub(4, "MC_utilInetAddrInt"),', '        gen_inotia_inet_addr_int_probe(4, "MC_utilInetAddrInt"),'),
         ]
         for old, new in replacements:
-            if new not in text:
-                if old not in text:
-                    raise SystemExit(f"method table entry not found in {path}: {old.strip()}")
+            if new not in text and old in text:
                 text = text.replace(old, new, 1)
+        required = [
+            'gen_inotia_net_probe_stub(2, "MC_netSocket", 1)',
+            'net::socket_connect_inotia.into_body()',
+            'gen_inotia_inet_addr_int_probe(4, "MC_utilInetAddrInt")',
+        ]
+        if not all(x in text for x in required):
+            raise SystemExit(f"network method table patch incomplete in {path}")
         path.write_text(text)
         print(f"inotia cash socket/connect/address probe patched: {path}")
         found_table = True
