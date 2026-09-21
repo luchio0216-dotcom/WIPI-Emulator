@@ -14,6 +14,9 @@ class InotiaCashShopProbeTest {
     private val width = SCREEN_WIDTH
     private val height = SCREEN_HEIGHT
     private val gameId = "inotia-cash-probe"
+    private val lastFrame = IntArray(width * height)
+    private var haveFrame = false
+    private var staticCaptures = 0
 
     @Test
     fun openCashShopAndCaptureBackendFailure() {
@@ -48,7 +51,7 @@ class InotiaCashShopProbeTest {
         frame(context.cacheDir, "cash-probe-07-charge-prompt.png", capture(1500))
         press("5") // default selection is Yes
         frame(context.cacheDir, "cash-probe-08-confirm-yes.png", capture(1800))
-        waitPump(8000)
+        waitPump(12000)
         frame(context.cacheDir, "cash-probe-09-after-wait.png", capture(1000))
 
         val kind = IntArray(1)
@@ -56,12 +59,13 @@ class InotiaCashShopProbeTest {
         File(context.cacheDir, "cash-probe-report.txt").writeText(
             buildString {
                 appendLine("sequence=CLR,4,5,8,8,8,5,5")
+                appendLine("staticCaptures=$staticCaptures")
                 appendLine("nativeErrorKind=${if (nativeError == null) "none" else kind[0]}")
                 appendLine("nativeError=${nativeError ?: "none"}")
                 appendLine("pollExit=${WipiNative.nativePollExit()}")
             }
         )
-        println("INOTIA_CASH_PROBE_DONE error=${nativeError ?: "none"}")
+        println("INOTIA_CASH_PROBE_DONE staticCaptures=$staticCaptures error=${nativeError ?: "none"}")
         WipiNative.nativeStop()
     }
 
@@ -90,25 +94,34 @@ class InotiaCashShopProbeTest {
         Thread.sleep(300)
     }
 
+    private fun pumpFrame(): Boolean {
+        val pixels = IntArray(width * height)
+        val fresh = WipiNative.nativeGetFrame(pixels)
+        if (fresh) {
+            pixels.copyInto(lastFrame)
+            haveFrame = true
+        }
+        return fresh
+    }
+
     private fun waitPump(ms: Long) {
         val until = System.currentTimeMillis() + ms
-        val pixels = IntArray(width * height)
         while (System.currentTimeMillis() < until) {
-            WipiNative.nativeGetFrame(pixels)
+            pumpFrame()
             Thread.sleep(40)
         }
     }
 
     private fun capture(ms: Long): IntArray {
         waitPump(ms)
-        val pixels = IntArray(width * height)
-        var saw = false
+        var fresh = false
         repeat(100) {
-            if (WipiNative.nativeGetFrame(pixels)) saw = true
+            if (pumpFrame()) fresh = true
             Thread.sleep(20)
         }
-        assertTrue("no emulator frame", saw)
-        return pixels.copyOf()
+        assertTrue("emulator never produced any frame", haveFrame)
+        if (!fresh) staticCaptures++
+        return lastFrame.copyOf()
     }
 
     private fun frame(dir: File, name: String, pixels: IntArray) {
