@@ -2,8 +2,9 @@
 """Advance Inotia 1 through defunct KTF cash-shop network gates for offline probing.
 
 AID-scoped only. No Internet access is implemented. MC_netConnect and
-MC_netSocketConnect complete through the guest callbacks, MC_netSocket gets a
+MC_netSocketConnect complete through guest callbacks, MC_netSocket gets a
 synthetic descriptor, and legacy address conversion only parses the guest IP.
+Also log KTF WIPIC interface/table addresses to diagnose indirect dispatch.
 """
 from pathlib import Path
 import os
@@ -25,9 +26,6 @@ connect_new = f'''            let result = if context.system().aid() == "{AID}" 
             context.call_function(self.cb, &[result, self.param]).await?;
 '''
 
-# Put the socket-connect callback in api/net.rs rather than a generated closure.
-# MethodBody owns the callback state, exactly like upstream MC_netConnect, so no
-# borrowed WIPICContext escapes into a generated async future.
 socket_callback = f'''
 
 pub async fn socket_connect_inotia(
@@ -113,6 +111,7 @@ fn gen_inotia_inet_addr_int_probe(id: WIPICWord, name: &'static str) -> WIPICMet
 
 found_net = False
 found_table = False
+found_interface = False
 for root in roots:
     for path in root.glob("**/wie_wipi_c/src/api/net.rs"):
         text = path.read_text()
@@ -156,5 +155,20 @@ for root in roots:
         print(f"inotia cash socket/connect/address probe patched: {path}")
         found_table = True
 
-if not found_net or not found_table:
-    raise SystemExit(f"Missing WIE patch target: net={found_net} table={found_table}")
+    # The crash occurs before method id 3 reaches the SVC handler. Log the
+    # actual interface pointers allocated for AID 010100D3 so we can determine
+    # whether the guest is indexing the net table with a legacy layout/offset.
+    for path in root.glob("**/wie_ktf/src/runtime/wipi_c/interface.rs"):
+        text = path.read_text()
+        needle = '''    let net_interface = write_methods(core, context, WIPICTableId::Net, method_table::get_net_method_table())?;\n'''
+        replacement = needle + f'''    if context.system().aid() == "{AID}" {{\n        tracing::warn!("Inotia cash probe: WIPIC tables util={{util_interface:#x}} misc={{misc_interface:#x}} interface3={{interface_3:#x}} interface4={{interface_4:#x}} interface5={{interface_5:#x}} db={{database_interface:#x}} interface7={{interface_7:#x}} uic={{uic_interface:#x}} media={{media_interface:#x}} net={{net_interface:#x}} interface11={{interface_11:#x}} interface12={{interface_12:#x}}");\n    }}\n'''
+        if replacement not in text:
+            if needle not in text:
+                raise SystemExit(f"net interface allocation marker not found in {path}")
+            text = text.replace(needle, replacement, 1)
+        path.write_text(text)
+        print(f"inotia cash interface-address probe patched: {path}")
+        found_interface = True
+
+if not found_net or not found_table or not found_interface:
+    raise SystemExit(f"Missing WIE patch target: net={found_net} table={found_table} interface={found_interface}")
