@@ -34,24 +34,37 @@ cat /tmp/cash-probe.txt
 cp /tmp/cash-probe.txt "$RESULT_DIR/instrumentation.txt"
 collect
 
-# Diagnose the PC=0 call site without persisting any game binary. The flattened
-# package does not necessarily call its executable client.bin, so first print
-# entry metadata and select an executable-sized candidate that actually covers
-# Base+0xc6c4. Only narrow byte windows are emitted to the evidence artifact.
+# Diagnose the PC=0 call site without persisting any game binary. Inotia ships a
+# nested 010100D3.jar, so inspect its directory rather than treating compressed
+# JAR bytes as ARM code. Emit metadata and only narrow byte windows from a
+# plausible nested executable/resource; never copy the package or user WFS.
 python3 - <<'PY' > "$RESULT_DIR/crash-site-bytes.txt" || true
-import zipfile
-z=zipfile.ZipFile('android/app/src/androidTest/assets/inotia1_flat.zip')
-infos=[i for i in z.infolist() if not i.is_dir()]
-print('entries:')
-for i in infos:
-    print(f'  {i.filename!r} size={i.file_size}')
-preferred=[i for i in infos if i.filename.lower().endswith(('client.bin','.bin','.mod','.exe')) and i.file_size>0xc704]
-covering=[i for i in infos if i.file_size>0xc704]
+import io, zipfile
+outer=zipfile.ZipFile('android/app/src/androidTest/assets/inotia1_flat.zip')
+infos=[i for i in outer.infolist() if not i.is_dir()]
+print('outer entries:')
+for i in infos: print(f'  {i.filename!r} size={i.file_size}')
+jar=next((i for i in infos if i.filename.lower().endswith('.jar')),None)
+if not jar:
+    print('nested_jar=None'); raise SystemExit
+raw=outer.read(jar)
+try: inner=zipfile.ZipFile(io.BytesIO(raw))
+except zipfile.BadZipFile:
+    print('nested_jar_bad_zip=',jar.filename); raise SystemExit
+inner_infos=[i for i in inner.infolist() if not i.is_dir()]
+print('nested jar=',repr(jar.filename))
+print('nested entries:')
+for i in inner_infos: print(f'  {i.filename!r} size={i.file_size}')
+# Prefer native-looking resources, then non-class payloads large enough to
+# contain the observed Base+0xc6c4 call site. Java .class bytes are not ARM.
+preferred=[i for i in inner_infos if i.filename.lower().endswith(('client.bin','.bin','.mod','.exe','.so')) and i.file_size>0xc704]
+covering=[i for i in inner_infos if not i.filename.lower().endswith(('.class','.mf')) and i.file_size>0xc704]
 candidates=preferred or covering
 name=candidates[0].filename if candidates else None
-print('selected_entry=',repr(name))
+print('selected_nested_entry=',repr(name))
 if name:
-    b=z.read(name)
+    b=inner.read(name)
+    print('selected_magic=',b[:16].hex(' '))
     for off in (0xc430,0xc470,0xc6a0,0xc6c4):
         lo=max(0,off-32); hi=min(len(b),off+64)
         print(f'offset=0x{off:x} range=0x{lo:x}-0x{hi:x}')
