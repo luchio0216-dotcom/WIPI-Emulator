@@ -10,7 +10,7 @@ CLASS='com.parkjeongseop.wipi.InotiaCashShopProbeTest#openCashShopAndCaptureBack
 
 collect() {
   local f
-  for f in cash-probe-00-gameplay.png cash-probe-01-clr.png cash-probe-02-system-tab.png cash-probe-03-system-list.png cash-probe-04-down1.png cash-probe-05-down2.png cash-probe-06-down3.png cash-probe-07-activate.png cash-probe-08-after-wait.png cash-probe-report.txt; do
+  for f in cash-probe-00-gameplay.png cash-probe-01-clr.png cash-probe-02-system-tab.png cash-probe-03-system-list.png cash-probe-04-down1.png cash-probe-05-down2.png cash-probe-06-down3.png cash-probe-07-charge-prompt.png cash-probe-08-confirm-yes.png cash-probe-09-after-wait.png cash-probe-report.txt; do
     adb exec-out run-as "$PKG" cat "cache/$f" > "$RESULT_DIR/$f" 2>/dev/null || true
     if [ -f "$RESULT_DIR/$f" ] && [ "$(wc -c < "$RESULT_DIR/$f")" -lt 20 ]; then rm -f "$RESULT_DIR/$f"; fi
   done
@@ -39,6 +39,6 @@ fi
 if ! grep -Eq 'OK \(1 test' /tmp/cash-probe.txt; then
   exit "$RC"
 fi
-test -s "$RESULT_DIR/cash-probe-07-activate.png"
+test -s "$RESULT_DIR/cash-probe-08-confirm-yes.png"
 test -s "$RESULT_DIR/cash-probe-report.txt"
 echo INOTIA_CASH_SHOP_PROBE_COMPLETE
