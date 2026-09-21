@@ -33,6 +33,13 @@ set -e
 cat /tmp/cash-probe.txt
 cp /tmp/cash-probe.txt "$RESULT_DIR/instrumentation.txt"
 collect
+
+echo '=== INOTIA CASH PROBE REPORT ==='
+cat "$RESULT_DIR/cash-probe-report.txt" 2>/dev/null || true
+echo '=== INOTIA CASH NETWORK TRACE ==='
+grep -E -i 'Inotia cash probe|MC_net|MC_utilInet|Unimplemented|Invalid memory|Fatal error|pollExit|socket|send|recv|write|read' "$RESULT_DIR/logcat.txt" | tail -n 300 || true
+echo '=== END INOTIA CASH NETWORK TRACE ==='
+
 if grep -Eq 'FAILURES!!!|INSTRUMENTATION_STATUS_CODE: -2' /tmp/cash-probe.txt; then
   exit 1
 fi
