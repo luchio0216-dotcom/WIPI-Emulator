@@ -48,9 +48,9 @@ for root in roots:
   path.write_text(text); found[1]=True
  for path in root.glob("**/wie_ktf/src/runtime/wipi_c/interface.rs"):
   text=path.read_text()
-  log=f'''    if context.system().aid() == "{AID}" {{\n        tracing::warn!("Inotia cash probe: WIPIC tables util={{util_interface:#x}} misc={{misc_interface:#x}} interface3={{interface_3:#x}} interface4={{interface_4:#x}} interface5={{interface_5:#x}} db={{database_interface:#x}} interface7={{interface_7:#x}} uic={{uic_interface:#x}} media={{media_interface:#x}} net={{net_interface:#x}} interface11={{interface_11:#x}} interface12={{interface_12:#x}}");\n    }}\n'''
-  # Remove any earlier copy, then insert only after interface_12 exists.
-  text=text.replace(log,'')
+  old=f'''    if context.system().aid() == "{AID}" {{\n        tracing::warn!("Inotia cash probe: WIPIC tables util={{util_interface:#x}} misc={{misc_interface:#x}} interface3={{interface_3:#x}} interface4={{interface_4:#x}} interface5={{interface_5:#x}} db={{database_interface:#x}} interface7={{interface_7:#x}} uic={{uic_interface:#x}} media={{media_interface:#x}} net={{net_interface:#x}} interface11={{interface_11:#x}} interface12={{interface_12:#x}}");\n    }}\n'''
+  log='''    tracing::warn!("Inotia cash probe: WIPIC tables aid={} util={util_interface:#x} misc={misc_interface:#x} interface3={interface_3:#x} interface4={interface_4:#x} interface5={interface_5:#x} db={database_interface:#x} interface7={interface_7:#x} uic={uic_interface:#x} media={media_interface:#x} net={net_interface:#x} interface11={interface_11:#x} interface12={interface_12:#x}", context.system().aid());\n'''
+  text=text.replace(old,'').replace(log,'')
   anchor='''    let interface_12 = write_methods(core, context, WIPICTableId::Interface12, method_table::get_unk12_method_table())?;\n'''
   if anchor not in text: raise SystemExit(f"interface_12 marker missing {path}")
   text=text.replace(anchor,anchor+log,1)
