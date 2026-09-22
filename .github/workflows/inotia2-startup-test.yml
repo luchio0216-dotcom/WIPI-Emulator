@@ -116,29 +116,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
-          script: |
-            set -e
-            gradle -p android :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace
-            APP_APK=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -n1)
-            TEST_APK=$(find android/app/build/outputs/apk/androidTest/debug -name '*.apk' | head -n1)
-            adb install -r "$APP_APK"
-            adb install -r "$TEST_APK"
-            set +e
-            adb shell am instrument -w -r -e class com.parkjeongseop.wipi.Inotia2StartupTest com.parkjeongseop.wipi.pdata4.test/androidx.test.runner.AndroidJUnitRunner > /tmp/inotia2-instrumentation.txt 2>&1
-            TEST_RC=$?
-            if grep -qE 'FAILURES!!!|No Inotia 2 emulator frame was produced|Inotia 2 never opened/provisioned cert.c2s' /tmp/inotia2-instrumentation.txt; then TEST_RC=1; fi
-            if grep -qE 'OK \([0-9]+ tests?\)' /tmp/inotia2-instrumentation.txt; then TEST_RC=0; fi
-            cat /tmp/inotia2-instrumentation.txt
-            set -e
-            mkdir -p inotia2-startup-result
-            PKG='com.parkjeongseop.wipi.pdata4'
-            for f in inotia2-frame-0.png inotia2-frame-1.png inotia2-frame-2.png inotia2-frame-3.png inotia2-frame-4.png inotia2-frame-5.png inotia2-report.txt; do
-              adb exec-out run-as "$PKG" cat "cache/$f" > "inotia2-startup-result/$f" 2>/dev/null || true
-            done
-            cp /tmp/inotia2-instrumentation.txt inotia2-startup-result/instrumentation.txt || true
-            adb logcat -d > inotia2-startup-result/logcat.txt 2>/dev/null || true
-            ls -lh inotia2-startup-result || true
-            exit "$TEST_RC"
+          script: bash scripts/run-inotia2-startup-ci.sh
 
       - name: Upload Inotia 2 startup evidence
         if: always()
