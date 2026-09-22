@@ -55,9 +55,12 @@ inner_infos=[i for i in inner.infolist() if not i.is_dir()]
 print('nested jar=',repr(jar.filename))
 print('nested entries:')
 for i in inner_infos: print(f'  {i.filename!r} size={i.file_size}')
-# Prefer native-looking resources, then non-class payloads large enough to
-# contain the observed Base+0xc6c4 call site. Java .class bytes are not ARM.
-preferred=[i for i in inner_infos if i.filename.lower().endswith(('client.bin','.bin','.mod','.exe','.so')) and i.file_size>0xc704]
+# This title carries its ARM image as client.bin<decimal-size> (for example
+# client.bin138532), not a literal client.bin suffix. Prefer that exact family
+# before generic large resources such as work.bar.
+preferred=[i for i in inner_infos if i.filename.lower().startswith('client.bin') and i.file_size>0xc704]
+if not preferred:
+    preferred=[i for i in inner_infos if i.filename.lower().endswith(('.bin','.mod','.exe','.so')) and i.file_size>0xc704]
 covering=[i for i in inner_infos if not i.filename.lower().endswith(('.class','.mf')) and i.file_size>0xc704]
 candidates=preferred or covering
 name=candidates[0].filename if candidates else None
