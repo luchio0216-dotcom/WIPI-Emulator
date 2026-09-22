@@ -36,10 +36,10 @@ collect
 
 # Diagnose the PC=0 call site without persisting any game binary. Inotia ships a
 # nested 010100D3.jar, so inspect its directory rather than treating compressed
-# JAR bytes as ARM code. Emit metadata and only narrow byte windows from a
-# plausible nested executable/resource; never copy the package or user WFS.
+# JAR bytes as ARM code. Emit metadata and only narrow byte windows from the
+# actual client.bin image; never copy the package or user WFS.
 python3 - <<'PY' > "$RESULT_DIR/crash-site-bytes.txt" || true
-import io, zipfile
+import io, struct, zipfile
 outer=zipfile.ZipFile('android/app/src/androidTest/assets/inotia1_flat.zip')
 infos=[i for i in outer.infolist() if not i.is_dir()]
 print('outer entries:')
@@ -55,9 +55,6 @@ inner_infos=[i for i in inner.infolist() if not i.is_dir()]
 print('nested jar=',repr(jar.filename))
 print('nested entries:')
 for i in inner_infos: print(f'  {i.filename!r} size={i.file_size}')
-# This title carries its ARM image as client.bin<decimal-size> (for example
-# client.bin138532), not a literal client.bin suffix. Prefer that exact family
-# before generic large resources such as work.bar.
 preferred=[i for i in inner_infos if i.filename.lower().startswith('client.bin') and i.file_size>0xc704]
 if not preferred:
     preferred=[i for i in inner_infos if i.filename.lower().endswith(('.bin','.mod','.exe','.so')) and i.file_size>0xc704]
@@ -68,7 +65,25 @@ print('selected_nested_entry=',repr(name))
 if name:
     b=inner.read(name)
     print('selected_magic=',b[:16].hex(' '))
-    for off in (0xc430,0xc470,0xc6a0,0xc6c4):
+    def thumb_bl_target(off):
+        if off+4>len(b): return None
+        h1,h2=struct.unpack_from('<HH',b,off)
+        if (h1 & 0xf800)!=0xf000 or (h2 & 0xd000)!=0xd000: return None
+        s=(h1>>10)&1; j1=(h2>>13)&1; j2=(h2>>11)&1
+        i1=(~(j1^s))&1; i2=(~(j2^s))&1
+        imm=(s<<24)|(i1<<23)|(i2<<22)|((h1&0x3ff)<<12)|((h2&0x7ff)<<1)
+        if s: imm-=1<<25
+        return (off+4+imm)&0xffffffff
+    call=0xc6c4
+    target=thumb_bl_target(call)
+    print(f'call_0xc6c4_halfwords=0x{struct.unpack_from("<H",b,call)[0]:04x},0x{struct.unpack_from("<H",b,call+2)[0]:04x}')
+    print('call_0xc6c4_thumb_bl_target=',None if target is None else f'0x{target:x}')
+    offsets=[0xc430,0xc470,0xc6a0,0xc6c4]
+    if target is not None and target < len(b): offsets += [max(0,target-0x20),target,target+0x20]
+    seen=set()
+    for off in offsets:
+        if off in seen: continue
+        seen.add(off)
         lo=max(0,off-32); hi=min(len(b),off+64)
         print(f'offset=0x{off:x} range=0x{lo:x}-0x{hi:x}')
         for p in range(lo,hi,16): print(f'{p:08x}: '+b[p:p+16].hex(' '))
