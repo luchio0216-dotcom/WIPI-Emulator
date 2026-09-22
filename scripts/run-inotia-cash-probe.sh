@@ -35,10 +35,11 @@ cp /tmp/cash-probe.txt "$RESULT_DIR/instrumentation.txt"
 collect
 
 # Inspect narrow windows only; never persist the private WFS/client binary.
-# Both accepted connect results (0 and -19) branch to 0xc642, which is the
-# epilogue of the MC_netConnect callback. 0xc64a therefore starts the adjacent
-# candidate completion/event handler. Locate literal references to that Thumb
-# entry so the next run can identify how the legacy network layer registers it.
+# The latest runtime trace exposed an important ABI clue: MC_netSocketConnect
+# receives r3/cb=0 but the following stack argument is 0x10c475, which looks
+# exactly like a Thumb code pointer.  The earlier 0xc64a hypothesis had no
+# literal references and 0xc64a is in fact the tail of the preceding epilogue.
+# Trace 0xc474/0xc475 and references to it before changing callback semantics.
 python3 - <<'PY' > "$RESULT_DIR/crash-site-bytes.txt" || true
 import io, struct, zipfile
 outer=zipfile.ZipFile('android/app/src/androidTest/assets/inotia1_flat.zip')
@@ -78,17 +79,23 @@ if name:
   h=struct.unpack_from('<H',b,off)[0]; t=thumb_cond_target(off)
   print(f'connect_result_branch {label} off=0x{off:x} halfword=0x{h:04x} target='+('None' if t is None else f'0x{t:x}'))
   if t is not None: branch_targets.append(t)
- # Candidate adjacent function begins after the common epilogue at 0xc642.
- # Search both relocatable offset and observed runtime-base forms.
- for value,label in [(0xc64b,'thumb_off_c64b'),(0x10c64b,'runtime_10c64b'),(0xc64a,'arm_off_c64a'),(0x10c64a,'runtime_10c64a')]:
+ # MC_netConnect itself is registered with callback 0x10c5e5. The socket call
+ # then exposes stack arg 0x10c475. Search both callback forms and the rejected
+ # adjacent-handler hypothesis so the ABI can be proven from the binary.
+ refs=[
+  (0xc475,'socket_cb_thumb_off_c475'),(0x10c475,'socket_cb_runtime_10c475'),
+  (0xc474,'socket_cb_arm_off_c474'),(0x10c474,'socket_cb_runtime_10c474'),
+  (0xc5e5,'net_cb_thumb_off_c5e5'),(0x10c5e5,'net_cb_runtime_10c5e5'),
+  (0xc64b,'old_candidate_thumb_c64b'),(0x10c64b,'old_candidate_runtime_10c64b')]
+ for value,label in refs:
   needle=struct.pack('<I',value); hits=[]; pos=0
   while True:
    pos=b.find(needle,pos)
    if pos<0: break
    hits.append(pos); pos+=1
-  print(f'completion_ref {label} value=0x{value:x} hits='+','.join(f'0x{x:x}' for x in hits[:32]))
+  print(f'callback_ref {label} value=0x{value:x} hits='+','.join(f'0x{x:x}' for x in hits[:32]))
   branch_targets += hits[:16]
- offsets=[0xc5e0,0xc622,0xc642,0xc64a,0xc662,0xc6a0,0xc6c4,0xc6d4]
+ offsets=[0xc450,0xc474,0xc475,0xc4a0,0xc5e0,0xc5e4,0xc622,0xc642,0xc64a,0xc662,0xc6a0,0xc6c4,0xc6d4]
  if target is not None: offsets += [target]
  offsets += branch_targets
  seen=set()
