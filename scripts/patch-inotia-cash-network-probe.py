@@ -54,5 +54,14 @@ for root in roots:
   anchor='''    let interface_12 = write_methods(core, context, WIPICTableId::Interface12, method_table::get_unk12_method_table())?;\n'''
   if anchor not in text: raise SystemExit(f"interface_12 marker missing {path}")
   text=text.replace(anchor,anchor+log,1)
+  # Inotia's client.bin proves its socket-connect call loads a direct function pointer
+  # from WIPICInterface+0x78 then BLs the common `bx r4` trampoline.  The stock KTF
+  # WIPICInterface is only 0x44 bytes, so that legacy slot is otherwise zero/unmapped.
+  # Allocate tail room only for this AID and map exactly +0x78 to Net function id 3.
+  alloc_old='''    let address = context.alloc_raw(size_of::<WIPICInterface>() as u32)?;\n\n    write_generic(context, address, interface)?;\n\n    Ok(address)\n'''
+  alloc_new=f'''    let is_inotia_legacy = context.system().aid() == "{AID}";\n    let interface_size = if is_inotia_legacy {{ 0x80 }} else {{ size_of::<WIPICInterface>() as u32 }};\n    let address = context.alloc_raw(interface_size)?;\n\n    write_generic(context, address, interface)?;\n    if is_inotia_legacy {{\n        let socket_connect_stub = core.make_svc_stub(crate::runtime::SVC_CATEGORY_WIPIC, WIPICTableId::Net.function_id(3))?;\n        write_generic(context, address + 0x78, socket_connect_stub)?;\n        tracing::warn!("Inotia cash probe: legacy WIPIC +0x78 MC_netSocketConnect stub={{socket_connect_stub:#x}} interface={{address:#x}}");\n    }}\n\n    Ok(address)\n'''
+  if alloc_new not in text:
+   if alloc_old not in text: raise SystemExit(f"interface allocation marker missing {path}")
+   text=text.replace(alloc_old,alloc_new,1)
   path.write_text(text); found[2]=True
 if not all(found): raise SystemExit(f"Missing patch target: {found}")
