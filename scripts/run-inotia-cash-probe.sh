@@ -34,10 +34,11 @@ cat /tmp/cash-probe.txt
 cp /tmp/cash-probe.txt "$RESULT_DIR/instrumentation.txt"
 collect
 
-# Diagnose the PC=0 call site without persisting any game binary. Inotia ships a
-# nested 010100D3.jar, so inspect its directory rather than treating compressed
-# JAR bytes as ARM code. Emit metadata and only narrow byte windows from the
-# actual client.bin image; never copy the package or user WFS.
+# Inspect only narrow windows from the private test package's client.bin. Never
+# persist the package or WFS. Besides the indirect-call trampoline, decode the
+# two conditional branches after MC_netSocketConnect. This distinguishes the
+# client's accepted pending results (0/-19) from its immediate cleanup path and
+# gives the next static state-machine targets without guessing another return.
 python3 - <<'PY' > "$RESULT_DIR/crash-site-bytes.txt" || true
 import io, struct, zipfile
 outer=zipfile.ZipFile('android/app/src/androidTest/assets/inotia1_flat.zip')
@@ -74,12 +75,26 @@ if name:
         imm=(s<<24)|(i1<<23)|(i2<<22)|((h1&0x3ff)<<12)|((h2&0x7ff)<<1)
         if s: imm-=1<<25
         return (off+4+imm)&0xffffffff
+    def thumb_cond_target(off):
+        if off+2>len(b): return None
+        h=struct.unpack_from('<H',b,off)[0]
+        if (h & 0xf000)!=0xd000 or ((h>>8)&0xf)>=0xe: return None
+        imm=h&0xff
+        if imm&0x80: imm-=0x100
+        return (off+4+(imm<<1))&0xffffffff
     call=0xc6c4
     target=thumb_bl_target(call)
     print(f'call_0xc6c4_halfwords=0x{struct.unpack_from("<H",b,call)[0]:04x},0x{struct.unpack_from("<H",b,call+2)[0]:04x}')
     print('call_0xc6c4_thumb_bl_target=',None if target is None else f'0x{target:x}')
-    offsets=[0xc430,0xc470,0xc6a0,0xc6c4]
+    branch_targets=[]
+    for off,label in [(0xc6ca,'r0_eq_0'),(0xc6d2,'r0_eq_minus19')]:
+        h=struct.unpack_from('<H',b,off)[0]
+        t=thumb_cond_target(off)
+        print(f'connect_result_branch {label} off=0x{off:x} halfword=0x{h:04x} target='+('None' if t is None else f'0x{t:x}'))
+        if t is not None and t < len(b): branch_targets.append(t)
+    offsets=[0xc430,0xc470,0xc6a0,0xc6c4,0xc6d4]
     if target is not None and target < len(b): offsets += [max(0,target-0x20),target,target+0x20]
+    for t in branch_targets: offsets += [max(0,t-0x20),t,t+0x20]
     seen=set()
     for off in offsets:
         if off in seen: continue
