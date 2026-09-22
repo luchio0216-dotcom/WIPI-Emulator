@@ -81,6 +81,23 @@ jobs:
           python3 scripts/patch-inotia-save-overwrite.py
           python3 scripts/patch-inotia-cash-network-probe.py
           python3 scripts/patch-inotia-legacy-net-tail.py
+          # client.bin accepts -19 as the legacy nonblocking/in-progress connect path
+          # (CMP r0,#0 / BEQ, then CMP r0,#-19 / BEQ). Return 1 immediately closed
+          # the socket, so test the evidenced -19 branch without any external socket.
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          roots=list((Path(os.environ.get('CARGO_HOME',str(Path.home()/'.cargo')))/'git'/'checkouts').glob('wie-*'))
+          hits=0
+          for root in roots:
+              for p in root.glob('**/wie_wipi_c/src/api/net.rs'):
+                  s=p.read_text()
+                  old='tracing::warn!("Inotia cash probe: MC_netSocketConnect legacy synchronous success=1 (cb=0)");\n        return Ok(1);'
+                  new='tracing::warn!("Inotia cash probe: MC_netSocketConnect legacy synchronous in-progress=-19 (cb=0)");\n        return Ok(-19);'
+                  if old in s:
+                      p.write_text(s.replace(old,new,1)); hits+=1
+          if hits != 1: raise SystemExit(f'expected one legacy connect return patch, got {hits}')
+          PY
           cd rust; cargo build -p wipi_android --release --target x86_64-linux-android; cd ..
           mkdir -p android/app/src/main/jniLibs/x86_64
           cp rust/target/x86_64-linux-android/release/libwipi_android.so android/app/src/main/jniLibs/x86_64/
