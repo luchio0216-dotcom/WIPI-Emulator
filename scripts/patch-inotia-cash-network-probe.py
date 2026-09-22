@@ -18,10 +18,12 @@ pub async fn socket_connect_inotia(context: &mut dyn WIPICContext, fd: WIPICWord
     // Inotia 1 calls the legacy KTF socket-connect slot synchronously with only
     // fd/addr/port. R3 is therefore zero; treating it as an async callback and
     // calling address 0 caused the post-connect PC=0 crash. Preserve async
-    // behavior only when a real callback pointer is supplied.
+    // behavior only when a real callback pointer is supplied. The client tests
+    // this synchronous return with CMP r0,#0 / BEQ failure, so success must be
+    // non-zero (1), not the callback-style zero success code.
     if cb == 0 {{
-        tracing::warn!("Inotia cash probe: MC_netSocketConnect legacy synchronous success (cb=0)");
-        return Ok(0);
+        tracing::warn!("Inotia cash probe: MC_netSocketConnect legacy synchronous success=1 (cb=0)");
+        return Ok(1);
     }}
     struct SocketConnectCallback {{ cb: WIPICWord, param: WIPICWord }}
     #[async_trait::async_trait]
