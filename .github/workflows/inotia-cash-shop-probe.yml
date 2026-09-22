@@ -80,6 +80,7 @@ jobs:
           python3 scripts/patch-inotia-storage-probe.py
           python3 scripts/patch-inotia-save-overwrite.py
           python3 scripts/patch-inotia-cash-network-probe.py
+          python3 scripts/patch-inotia-legacy-net-tail.py
           cd rust; cargo build -p wipi_android --release --target x86_64-linux-android; cd ..
           mkdir -p android/app/src/main/jniLibs/x86_64
           cp rust/target/x86_64-linux-android/release/libwipi_android.so android/app/src/main/jniLibs/x86_64/
