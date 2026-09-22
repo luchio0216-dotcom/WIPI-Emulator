@@ -15,6 +15,14 @@ socket_callback=f'''
 pub async fn socket_connect_inotia(context: &mut dyn WIPICContext, fd: WIPICWord, addr: WIPICWord, port: WIPICWord, cb: WIPICWord, param: WIPICWord) -> Result<i32> {{
     if context.system().aid() != "{AID}" {{ return Err(WieError::Unimplemented("3: MC_netSocketConnect".into())); }}
     tracing::warn!("Inotia cash probe: MC_netSocketConnect fd={{fd:#x}} addr={{addr:#x}} port={{port}} cb={{cb:#x}} param={{param:#x}} -> local success; no external socket");
+    // Inotia 1 calls the legacy KTF socket-connect slot synchronously with only
+    // fd/addr/port. R3 is therefore zero; treating it as an async callback and
+    // calling address 0 caused the post-connect PC=0 crash. Preserve async
+    // behavior only when a real callback pointer is supplied.
+    if cb == 0 {{
+        tracing::warn!("Inotia cash probe: MC_netSocketConnect legacy synchronous success (cb=0)");
+        return Ok(0);
+    }}
     struct SocketConnectCallback {{ cb: WIPICWord, param: WIPICWord }}
     #[async_trait::async_trait]
     impl MethodBody<WieError> for SocketConnectCallback {{ async fn call(&self, context: &mut dyn WIPICContext, _: Box<[WIPICWord]>) -> Result<WIPICResult> {{ context.system().sleep(1).await; tracing::warn!("Inotia cash probe: MC_netSocketConnect callback -> success"); context.call_function(self.cb, &[0,self.param]).await?; Ok(WIPICResult {{ results: Vec::new() }}) }} }}
@@ -54,10 +62,6 @@ for root in roots:
   anchor='''    let interface_12 = write_methods(core, context, WIPICTableId::Interface12, method_table::get_unk12_method_table())?;\n'''
   if anchor not in text: raise SystemExit(f"interface_12 marker missing {path}")
   text=text.replace(anchor,anchor+log,1)
-  # client.bin loads WIPICInterface+0x78 before the runtime has initialized AID.
-  # Reserve that legacy tail for KTF interfaces up front and install a dispatcher stub.
-  # The method body itself remains strictly AID-gated, so non-Inotia games retain the
-  # original Unimplemented network behavior and cannot gain local-success semantics.
   alloc_old='''    let address = context.alloc_raw(size_of::<WIPICInterface>() as u32)?;\n\n    write_generic(context, address, interface)?;\n\n    Ok(address)\n'''
   previous=f'''    let is_inotia_legacy = context.system().aid() == "{AID}";\n    let interface_size = if is_inotia_legacy {{ 0x80 }} else {{ size_of::<WIPICInterface>() as u32 }};\n    let address = context.alloc_raw(interface_size)?;\n\n    write_generic(context, address, interface)?;\n    if is_inotia_legacy {{\n        let socket_connect_stub = core.make_svc_stub(crate::runtime::SVC_CATEGORY_WIPIC, WIPICTableId::Net.function_id(3u16))?;\n        write_generic(context, address + 0x78, socket_connect_stub)?;\n        tracing::warn!("Inotia cash probe: legacy WIPIC +0x78 MC_netSocketConnect stub={{socket_connect_stub:#x}} interface={{address:#x}}");\n    }}\n\n    Ok(address)\n'''
   alloc_new='''    let interface_size = core::cmp::max(size_of::<WIPICInterface>() as u32, 0x80);\n    let address = context.alloc_raw(interface_size)?;\n\n    write_generic(context, address, interface)?;\n    let socket_connect_stub = core.make_svc_stub(crate::runtime::SVC_CATEGORY_WIPIC, WIPICTableId::Net.function_id(3u16))?;\n    write_generic(context, address + 0x78, socket_connect_stub)?;\n    tracing::warn!("Inotia cash probe: guarded legacy WIPIC +0x78 socket-connect dispatcher stub={socket_connect_stub:#x} interface={address:#x} aid_at_init={}", context.system().aid());\n\n    Ok(address)\n'''
