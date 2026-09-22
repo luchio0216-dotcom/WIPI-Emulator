@@ -12,23 +12,23 @@ connect_new=f'''            let result = if context.system().aid() == "{AID}" {{
 '''
 socket_callback=f'''
 
-pub async fn socket_connect_inotia(context: &mut dyn WIPICContext, fd: WIPICWord, addr: WIPICWord, port: WIPICWord, cb: WIPICWord, param: WIPICWord) -> Result<i32> {{
+pub async fn socket_connect_inotia(context: &mut dyn WIPICContext, fd: WIPICWord, addr: WIPICWord, port: WIPICWord, cb: WIPICWord, stack_cb: WIPICWord, stack_param: WIPICWord) -> Result<i32> {{
     if context.system().aid() != "{AID}" {{ return Err(WieError::Unimplemented("3: MC_netSocketConnect".into())); }}
-    tracing::warn!("Inotia cash probe: MC_netSocketConnect fd={{fd:#x}} addr={{addr:#x}} port={{port}} cb={{cb:#x}} param={{param:#x}} -> local success; no external socket");
-    // Inotia 1 calls the legacy KTF socket-connect slot synchronously with only
-    // fd/addr/port. R3 is therefore zero; treating it as an async callback and
-    // calling address 0 caused the post-connect PC=0 crash. Preserve async
-    // behavior only when a real callback pointer is supplied. The client tests
-    // this synchronous return with CMP r0,#0 / BEQ failure, so success must be
-    // non-zero (1), not the callback-style zero success code.
-    if cb == 0 {{
-        tracing::warn!("Inotia cash probe: MC_netSocketConnect legacy synchronous success=1 (cb=0)");
-        return Ok(1);
+    tracing::warn!("Inotia cash probe: MC_netSocketConnect fd={{fd:#x}} addr={{addr:#x}} port={{port}} r3_cb={{cb:#x}} stack_cb={{stack_cb:#x}} stack_param={{stack_param:#x}} -> offline local; no external socket");
+    // The legacy KTF call site passes zero in R3, then places a Thumb function
+    // pointer and its opaque parameter on the stack. The previous probe proved
+    // stack_cb=0x10c475 while returning -19 without delivering completion only
+    // waits until the game's timeout. Preserve the evidenced nonblocking -19
+    // return, but now deliver the completion through the actual stack callback.
+    let actual_cb = if cb != 0 {{ cb }} else {{ stack_cb }};
+    let actual_param = if cb != 0 {{ stack_cb }} else {{ stack_param }};
+    if actual_cb != 0 {{
+        struct SocketConnectCallback {{ cb: WIPICWord, param: WIPICWord }}
+        #[async_trait::async_trait]
+        impl MethodBody<WieError> for SocketConnectCallback {{ async fn call(&self, context: &mut dyn WIPICContext, _: Box<[WIPICWord]>) -> Result<WIPICResult> {{ context.system().sleep(1).await; tracing::warn!("Inotia cash probe: MC_netSocketConnect completion cb={{:#x}} param={{:#x}} status=0", self.cb, self.param); context.call_function(self.cb, &[0,self.param]).await?; Ok(WIPICResult {{ results: Vec::new() }}) }} }}
+        context.spawn(Box::new(SocketConnectCallback {{ cb:actual_cb,param:actual_param }}))?;
     }}
-    struct SocketConnectCallback {{ cb: WIPICWord, param: WIPICWord }}
-    #[async_trait::async_trait]
-    impl MethodBody<WieError> for SocketConnectCallback {{ async fn call(&self, context: &mut dyn WIPICContext, _: Box<[WIPICWord]>) -> Result<WIPICResult> {{ context.system().sleep(1).await; tracing::warn!("Inotia cash probe: MC_netSocketConnect callback -> success"); context.call_function(self.cb, &[0,self.param]).await?; Ok(WIPICResult {{ results: Vec::new() }}) }} }}
-    context.spawn(Box::new(SocketConnectCallback {{ cb,param }}))?; Ok(0)
+    Ok(-19)
 }}
 '''
 helper=f'''
