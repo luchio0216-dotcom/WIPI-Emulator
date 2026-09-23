@@ -1,84 +1,63 @@
-name: Inotia 2 original startup test
+name: Inotia2 startup test
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - feature/p-data-import
-  workflow_dispatch:
-
-permissions:
-  contents: read
+    paths:
+      - 'android/app/src/androidTest/java/com/parkjeongseop/wipi/Inotia2StartupTest.kt'
+      - 'android/app/src/main/java/com/parkjeongseop/wipi/GameLibrary.kt'
+      - 'android/app/src/main/java/com/parkjeongseop/wipi/PDataImporter.kt'
+      - 'scripts/patch-inotia2-certificate.py'
+      - 'scripts/patch-ktf-packaged-db-seed.py'
+      - 'scripts/patch-inotia2-ktf-slot12.py'
+      - '.github/workflows/inotia2-startup-test.yml'
 
 jobs:
   inotia2-startup:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      INOTIA2_SHA256: 974e0df9ab1e51751efdef21a0fe324ad79917f41cd049fcfaf7c46c14f9e324
+      INOTIA2_URL: https://blog.kakaocdn.net/dn/bKKLup/btrI1E3JgJQ/sdJOAJEjZqkFlQxYP0VvN1/%EC%9D%B4%EB%85%B8%ED%8B%B0%EC%95%84%EC%97%B0%EB%8C%80%EA%B8%B02.zip?attach=1&knm=tfile.zip
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Set up Java 17
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          gradle-version: '8.11.1'
+          targets: x86_64-linux-android
 
-      - name: Fetch exact original Inotia 2 archive
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android components
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.1.12297006" "emulator" "system-images;android-35;google_apis;x86_64"
+
+      - name: Download exact Inotia2 package
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /tmp/inotia2 android/app/src/androidTest/assets
-          curl -fsSL -A 'Mozilla/5.0' 'https://dubigame.tistory.com/136' -o /tmp/inotia2/page.html
-          python3 - <<'PY'
-          import html, re, subprocess, pathlib, hashlib
-          page = pathlib.Path('/tmp/inotia2/page.html').read_text(errors='ignore')
-          candidates = re.findall(r'href=["\']([^"\']+)["\']', page, flags=re.I)
-          urls = []
-          for raw in candidates:
-              u = html.unescape(raw).replace('\\u0026', '&').replace('\\/', '/')
-              if 'blog.kakaocdn.net' in u and ('.zip' in u.lower() or 'tfile.zip' in u.lower()):
-                  urls.append(u)
-          if not urls:
-              for raw in re.findall(r'https?://[^"\'<> ]*blog\.kakaocdn\.net[^"\'<> ]+', page, flags=re.I):
-                  u = html.unescape(raw).replace('\\u0026', '&').replace('\\/', '/')
-                  if '.zip' in u.lower() or 'tfile.zip' in u.lower():
-                      urls.append(u)
-          if not urls:
-              raise SystemExit('Could not locate Inotia 2 ZIP attachment')
-          expected = '974e0df9ab1e51751efdef21a0fe324ad79917f41cd049fcfaf7c46c14f9e324'
-          target = pathlib.Path('/tmp/inotia2/original.zip')
-          matched = False
-          for url in dict.fromkeys(urls):
-              try:
-                  subprocess.run(['curl','-fL','--retry','3','-A','Mozilla/5.0','-e','https://dubigame.tistory.com/136',url,'-o',str(target)], check=True)
-              except subprocess.CalledProcessError:
-                  continue
-              digest = hashlib.sha256(target.read_bytes()).hexdigest()
-              print('candidate sha256', digest, 'bytes', target.stat().st_size)
-              if digest == expected:
-                  matched = True
-                  break
-          if not matched:
-              raise SystemExit('Downloaded attachments did not match exact Inotia 2 SHA-256')
-          out = pathlib.Path('android/app/src/androidTest/assets/inotia2_original.zip')
-          out.write_bytes(target.read_bytes())
-          print('exact Inotia 2 fixture:', out, out.stat().st_size, expected)
-          PY
+          mkdir -p android/app/src/androidTest/assets
+          curl -fL --retry 3 --retry-delay 2 "$INOTIA2_URL" -o android/app/src/androidTest/assets/inotia2-original.zip
+          ACTUAL="$(sha256sum android/app/src/androidTest/assets/inotia2-original.zip | awk '{print $1}')"
+          echo "Inotia2 SHA-256: $ACTUAL"
+          test "$ACTUAL" = "$INOTIA2_SHA256"
 
-      - name: Install Android NDK and Rust x86_64 target
-        shell: bash
-        run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
-          rustup target add x86_64-linux-android
-
-      - name: Build x86_64 Rust JNI with Inotia compatibility
+      - name: Build x86_64 Rust JNI with Inotia2 compatibility
         shell: bash
         run: |
           set -euo pipefail
@@ -93,8 +72,7 @@ jobs:
           python3 scripts/patch-inotia-min.py
           python3 scripts/patch-inotia2-certificate.py
           python3 scripts/patch-ktf-packaged-db-seed.py
-          python3 scripts/patch-inotia-storage-probe.py
-          python3 scripts/patch-inotia-save-overwrite.py
+          python3 scripts/patch-inotia2-ktf-slot12.py
           cd rust
           cargo build -p wipi_android --release --target x86_64-linux-android
           cd ..
@@ -107,23 +85,33 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm || true
+          ls -l /dev/kvm
 
-      - name: Run exact Inotia 2 in Android virtual device
+      - name: Run Inotia2 startup instrumentation
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
-          target: google_apis
           arch: x86_64
-          profile: pixel_6
+          target: google_apis
+          profile: pixel_2
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
-          script: bash scripts/run-inotia2-startup-ci.sh
+          script: |
+            cd android
+            ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.parkjeongseop.wipi.Inotia2StartupTest --stacktrace
 
-      - name: Upload Inotia 2 startup evidence
+      - name: Collect Inotia2 diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p inotia2-startup-result
+          find android/app/build -type f \( -name 'inotia2-frame-*.png' -o -name 'inotia2-report.txt' -o -name '*.xml' \) -print -exec cp {} inotia2-startup-result/ \; || true
+          adb logcat -d > inotia2-startup-result/logcat.txt 2>/dev/null || true
+
+      - name: Upload Inotia2 startup result
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: inotia2-startup-result
           path: inotia2-startup-result/
           if-no-files-found: warn
-          retention-days: 14
