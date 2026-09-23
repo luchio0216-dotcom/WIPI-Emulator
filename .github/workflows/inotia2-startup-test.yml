@@ -126,7 +126,6 @@ jobs:
           cd rust
           cargo fetch
           cd ..
-          python3 scripts/patch-inotia-min.py
           python3 scripts/patch-inotia2-certificate.py
           python3 scripts/patch-ktf-packaged-db-seed.py
           python3 scripts/patch-inotia2-ktf-slot12.py
