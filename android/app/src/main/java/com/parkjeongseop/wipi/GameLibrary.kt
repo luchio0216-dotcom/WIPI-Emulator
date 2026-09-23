@@ -8,10 +8,13 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.charset.Charset
 import java.util.UUID
+import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 data class GameEntry(val id: String, val name: String, val cover: Bitmap?, val gameFile: File, val filename: String, val dataDir: File)
 
@@ -30,21 +33,19 @@ class GameLibrary(private val context: Context) {
             var gameFile = File(dir, filename)
             if (!gameFile.exists()) return null
 
-            // Builds before the Inotia 2 startup fix kept the outer handset
-            // distribution ZIP as the executable. WIE cannot execute that wrapper
-            // ("Unknown archive format"); the actual KTF program is 010100D5.jar
-            // inside it. Migrate such entries in-place and restore P/ at the same
-            // time so users do not need to delete/re-import the game.
+            // Older builds kept the public handset distribution ZIP as the executable.
+            // Migrate it to a clean KTF runtime archive. The embedded JAR is still the
+            // actual program, while __adf__ supplies PID/AID/MClass required by WIE.
             val stored = gameFile.readBytes()
-            if (packageAid(stored) == "010100D5") {
-                val jar = extractEmbeddedJar(stored, "010100D5") ?: return null
+            if (filename != "010100D5-runtime.zip" && packageAid(stored) == "010100D5") {
+                val runtime = buildInotia2RuntimeArchive(stored) ?: return null
                 val source = File(dir, "inotia2-source.zip")
                 if (!source.exists()) source.writeBytes(stored)
-                val jarFile = File(dir, "010100D5.jar").apply { writeBytes(jar) }
-                val migrated = GameEntry(dir.name, meta.getString("name"), null, jarFile, jarFile.name, File(dir, "data"))
+                val runtimeFile = File(dir, "010100D5-runtime.zip").apply { writeBytes(runtime) }
+                val migrated = GameEntry(dir.name, meta.getString("name"), null, runtimeFile, runtimeFile.name, File(dir, "data"))
                 PDataImporter(context).importZip(migrated, Uri.fromFile(source)).getOrElse { return null }
-                filename = jarFile.name
-                gameFile = jarFile
+                filename = runtimeFile.name
+                gameFile = runtimeFile
                 meta.put("filename", filename).put("sourcePackage", source.name)
                 metaFile.writeText(meta.toString())
             }
@@ -65,13 +66,14 @@ class GameLibrary(private val context: Context) {
 
         val executableFilename: String
         if (aid == "010100D5") {
-            // The public Inotia 2 package is an installation wrapper, not a WIE
-            // executable archive. Preserve it privately for P-data/migration, but
-            // launch the embedded KTF JAR just like the original handset did.
-            val jar = extractEmbeddedJar(bytes, aid) ?: run { dir.deleteRecursively(); return null }
+            // KTF execution needs both the embedded 010100D5.jar and the outer __adf__.
+            // Running only the JAR loses MClass/PID and WIE terminates with
+            // "Main class not found". Build a minimal private runtime archive from the
+            // exact original descriptor + JAR; P/ remains installed in guest storage.
+            val runtime = buildInotia2RuntimeArchive(bytes) ?: run { dir.deleteRecursively(); return null }
             val source = File(dir, "inotia2-source.zip").apply { writeBytes(bytes) }
-            executableFilename = "010100D5.jar"
-            File(dir, executableFilename).writeBytes(jar)
+            executableFilename = "010100D5-runtime.zip"
+            File(dir, executableFilename).writeBytes(runtime)
             File(dir, "meta.json").writeText(JSONObject().put("name", name).put("filename", executableFilename).put("sourcePackage", source.name).toString())
             val entry = loadWithoutMigration(dir) ?: run { dir.deleteRecursively(); return null }
             PDataImporter(context).importZip(entry, Uri.fromFile(source)).getOrElse { dir.deleteRecursively(); return null }
@@ -94,14 +96,17 @@ class GameLibrary(private val context: Context) {
     fun delete(entry: GameEntry) { File(root, entry.id).deleteRecursively() }
 
     private fun packageAid(zipBytes: ByteArray): String? {
+        val adf = extractEntry(zipBytes, "__adf__") ?: return null
+        val text = adf.toString(Charset.forName("EUC-KR"))
+        return Regex("(?im)^\\s*AID\\s*[:=]\\s*([A-Za-z0-9._-]+)\\s*$").find(text)?.groupValues?.getOrNull(1)?.trim()
+    }
+
+    private fun extractEntry(zipBytes: ByteArray, wanted: String): ByteArray? {
         ZipInputStream(ByteArrayInputStream(zipBytes)).use { zip ->
             while (true) {
                 val entry = zip.nextEntry ?: return null
                 val name = entry.name.replace('\\', '/').trimStart('/')
-                if (!entry.isDirectory && (name == "__adf__" || name.endsWith("/__adf__"))) {
-                    val text = zip.readBytes().toString(Charset.forName("EUC-KR"))
-                    return Regex("(?im)^\\s*AID\\s*[:=]\\s*([A-Za-z0-9._-]+)\\s*$").find(text)?.groupValues?.getOrNull(1)?.trim()
-                }
+                if (!entry.isDirectory && (name.equals(wanted, true) || name.endsWith("/$wanted", true))) return zip.readBytes()
                 zip.closeEntry()
             }
         }
@@ -119,6 +124,18 @@ class GameLibrary(private val context: Context) {
                 }
                 zip.closeEntry()
             }
+        }
+    }
+
+    private fun buildInotia2RuntimeArchive(source: ByteArray): ByteArray? {
+        val jar = extractEmbeddedJar(source, "010100D5") ?: return null
+        val adf = extractEntry(source, "__adf__") ?: return null
+        return ByteArrayOutputStream().use { out ->
+            ZipOutputStream(out).use { zip ->
+                zip.putNextEntry(ZipEntry("__adf__")); zip.write(adf); zip.closeEntry()
+                zip.putNextEntry(ZipEntry("010100D5.jar")); zip.write(jar); zip.closeEntry()
+            }
+            out.toByteArray()
         }
     }
 
