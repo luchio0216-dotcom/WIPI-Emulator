@@ -35,7 +35,11 @@ class Inotia2StartupTest {
         entry!!
 
         val executable = entry.gameFile.readBytes()
-        val archiveMetadata = archiveMetadata(original, executable)
+        // Metadata tracing is diagnostic only. Some original KTF ZIP/JAR records contain
+        // legacy size fields Android's ZipInputStream rejects even though GameLibrary/WIE
+        // can consume the package. Never let this probe prevent the actual startup test.
+        val archiveMetadata = runCatching { archiveMetadata(original, executable) }
+            .getOrElse { "archiveMetadataError=${it.javaClass.simpleName}: ${it.message}" }
         val rawCert = File(entry.dataDir, "fs/010100D5/cert.c2s")
         assertTrue("P/cert.c2s was not installed into the guest filesystem", rawCert.isFile)
         assertEquals(23L, rawCert.length())
