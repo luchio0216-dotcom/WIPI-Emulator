@@ -9,8 +9,11 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.ByteArrayInputStream
 import java.io.File
+import java.nio.charset.Charset
 import java.security.MessageDigest
+import java.util.zip.ZipInputStream
 
 @RunWith(AndroidJUnit4::class)
 class Inotia2StartupTest {
@@ -31,10 +34,12 @@ class Inotia2StartupTest {
         assertNotNull("GameLibrary failed to import the original Inotia 2 archive", entry)
         entry!!
 
+        val executable = entry.gameFile.readBytes()
+        val archiveMetadata = archiveMetadata(original, executable)
         val rawCert = File(entry.dataDir, "fs/010100D5/cert.c2s")
         assertTrue("P/cert.c2s was not installed into the guest filesystem", rawCert.isFile)
         assertEquals(23L, rawCert.length())
-        val started = WipiNative.nativeStart(entry.gameFile.readBytes(), entry.filename, entry.dataDir.absolutePath, "")
+        val started = WipiNative.nativeStart(executable, entry.filename, entry.dataDir.absolutePath, "")
 
         val frames = mutableListOf<IntArray>()
         val frameSeen = mutableListOf<Boolean>()
@@ -54,6 +59,9 @@ class Inotia2StartupTest {
             appendLine("archiveSha256=${sha256(original)}")
             appendLine("aid=010100D5")
             appendLine("pid=PD007974")
+            appendLine("executableFilename=${entry.filename}")
+            appendLine("executableSha256=${sha256(executable)}")
+            appendLine(archiveMetadata)
             appendLine("nativeStart=$started")
             appendLine("rawCert=${rawCert.readBytes().joinToString("") { "%02x".format(it) }}")
             appendLine("provisionedCert=$provisionedHex")
@@ -73,6 +81,34 @@ class Inotia2StartupTest {
         assertTrue("No Inotia 2 emulator frame was produced; see inotia2-report.txt and logcat", frameSeen.any { it })
         assertTrue("Inotia 2 never opened/provisioned cert.c2s", provisioned.isFile)
         assertEquals("55c708598d5ee163adffb344997311e445d64728dadbac", provisionedHex)
+    }
+
+    private fun archiveMetadata(outer: ByteArray, executable: ByteArray): String {
+        fun entries(bytes: ByteArray): Map<String, ByteArray> {
+            val result = linkedMapOf<String, ByteArray>()
+            ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
+                while (true) {
+                    val item = zip.nextEntry ?: break
+                    if (!item.isDirectory) result[item.name.replace('\\', '/')] = zip.readBytes()
+                    zip.closeEntry()
+                }
+            }
+            return result
+        }
+        val outerEntries = entries(outer)
+        val jarEntries = entries(executable)
+        fun text(map: Map<String, ByteArray>, suffix: String): String {
+            val hit = map.entries.firstOrNull { it.key.equals(suffix, true) || it.key.endsWith("/$suffix", true) } ?: return "<missing>"
+            return hit.value.toString(Charset.forName("EUC-KR")).replace("\r", "\\r").replace("\n", "\\n")
+        }
+        val classNames = jarEntries.keys.filter { it.endsWith(".class", true) }.take(80).joinToString(",")
+        return buildString {
+            appendLine("outerAdf=${text(outerEntries, "__adf__")}")
+            appendLine("outerClass=${text(outerEntries, "__class__")}")
+            appendLine("jarManifest=${text(jarEntries, "META-INF/MANIFEST.MF")}")
+            appendLine("jarEntries=${jarEntries.keys.take(120).joinToString(",")}")
+            appendLine("jarClasses=$classNames")
+        }.trimEnd()
     }
 
     private fun pressOk() {
