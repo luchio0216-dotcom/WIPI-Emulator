@@ -32,10 +32,6 @@ class GameLibrary(private val context: Context) {
             var filename = meta.getString("filename")
             var gameFile = File(dir, filename)
             if (!gameFile.exists()) return null
-
-            // Older builds kept the public handset distribution ZIP as the executable.
-            // Migrate it to a clean KTF runtime archive. The embedded JAR is still the
-            // actual program, while __adf__ supplies PID/AID/MClass required by WIE.
             val stored = gameFile.readBytes()
             if (filename != "010100D5-runtime.zip" && packageAid(stored) == "010100D5") {
                 val runtime = buildInotia2RuntimeArchive(stored) ?: return null
@@ -49,7 +45,6 @@ class GameLibrary(private val context: Context) {
                 meta.put("filename", filename).put("sourcePackage", source.name)
                 metaFile.writeText(meta.toString())
             }
-
             val cover = File(dir, "cover.png").takeIf { it.exists() }?.let { BitmapFactory.decodeFile(it.path) }
             GameEntry(dir.name, meta.getString("name"), cover, gameFile, filename, File(dir, "data"))
         } catch (_: Exception) { null }
@@ -60,16 +55,10 @@ class GameLibrary(private val context: Context) {
         val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return null
         val aid = packageAid(bytes)
         val id = UUID.randomUUID().toString(); val dir = File(root, id).apply { mkdirs() }
-
         WipiNative.nativeGameIcon(bytes)?.let { File(dir, "cover.png").writeBytes(it) }
         val name = WipiNative.nativeGameName(bytes)?.toString(Charset.forName("EUC-KR")) ?: originalFilename.substringBeforeLast('.')
-
         val executableFilename: String
         if (aid == "010100D5") {
-            // KTF execution needs both the embedded 010100D5.jar and the outer __adf__.
-            // Running only the JAR loses MClass/PID and WIE terminates with
-            // "Main class not found". Build a minimal private runtime archive from the
-            // exact original descriptor + JAR; P/ remains installed in guest storage.
             val runtime = buildInotia2RuntimeArchive(bytes) ?: run { dir.deleteRecursively(); return null }
             val source = File(dir, "inotia2-source.zip").apply { writeBytes(bytes) }
             executableFilename = "010100D5-runtime.zip"
@@ -79,7 +68,6 @@ class GameLibrary(private val context: Context) {
             PDataImporter(context).importZip(entry, Uri.fromFile(source)).getOrElse { dir.deleteRecursively(); return null }
             return entry
         }
-
         executableFilename = originalFilename
         File(dir, executableFilename).writeBytes(bytes)
         File(dir, "meta.json").writeText(JSONObject().put("name", name).put("filename", executableFilename).toString())
@@ -127,13 +115,39 @@ class GameLibrary(private val context: Context) {
         }
     }
 
+    private fun extractPackagedPData(zipBytes: ByteArray): List<Pair<String, ByteArray>> {
+        val result = mutableListOf<Pair<String, ByteArray>>()
+        ZipInputStream(ByteArrayInputStream(zipBytes)).use { zip ->
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                if (!entry.isDirectory) {
+                    val name = entry.name.replace('\\', '/').trimStart('/')
+                    val marker = name.indexOf("P/", ignoreCase = true)
+                    if (marker >= 0 && (marker == 0 || name[marker - 1] == '/')) {
+                        val relative = name.substring(marker + 2)
+                        if (relative.isNotBlank() && !relative.contains("..")) result += "P/$relative" to zip.readBytes()
+                    }
+                }
+                zip.closeEntry()
+            }
+        }
+        return result
+    }
+
     private fun buildInotia2RuntimeArchive(source: ByteArray): ByteArray? {
         val jar = extractEmbeddedJar(source, "010100D5") ?: return null
         val adf = extractEntry(source, "__adf__") ?: return null
+        val packagedP = extractPackagedPData(source)
         return ByteArrayOutputStream().use { out ->
             ZipOutputStream(out).use { zip ->
                 zip.putNextEntry(ZipEntry("__adf__")); zip.write(adf); zip.closeEntry()
                 zip.putNextEntry(ZipEntry("010100D5.jar")); zip.write(jar); zip.closeEntry()
+                // W-Feature keeps P/ inside the KTF package. Its GuestFiles() strips
+                // the P/ prefix and marks these bytes packaged, so they are visible
+                // to the game but do not consume writable private-area capacity.
+                for ((name, data) in packagedP) {
+                    zip.putNextEntry(ZipEntry(name)); zip.write(data); zip.closeEntry()
+                }
             }
             out.toByteArray()
         }
