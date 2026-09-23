@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 45
     env:
       INOTIA2_SHA256: 974e0df9ab1e51751efdef21a0fe324ad79917f41cd049fcfaf7c46c14f9e324
-      INOTIA2_URL: https://blog.kakaocdn.net/dn/bKKLup/btrI1E3JgJQ/sdJOAJEjZqkFlQxYP0VvN1/%EC%9D%B4%EB%85%B8%ED%8B%B0%EC%95%84%EC%97%B0%EB%8C%80%EA%B8%B02.zip?attach=1&knm=tfile.zip
+      INOTIA2_PAGE: https://dubigame.tistory.com/136
 
     steps:
       - uses: actions/checkout@v4
@@ -50,7 +50,66 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p android/app/src/androidTest/assets
-          curl -fL --retry 3 --retry-delay 2 "$INOTIA2_URL" -o android/app/src/androidTest/assets/inotia2-original.zip
+          python3 - <<'PY'
+          import hashlib
+          import html as html_lib
+          import os
+          from html.parser import HTMLParser
+          from urllib.request import Request, urlopen
+
+          page = os.environ['INOTIA2_PAGE']
+          expected = os.environ['INOTIA2_SHA256'].lower()
+          out = 'android/app/src/androidTest/assets/inotia2-original.zip'
+          ua = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36'
+
+          class LinkParser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.links = []
+              def handle_starttag(self, tag, attrs):
+                  if tag.lower() != 'a':
+                      return
+                  for key, value in attrs:
+                      if key.lower() == 'href' and value:
+                          self.links.append(html_lib.unescape(value))
+
+          req = Request(page, headers={'User-Agent': ua})
+          body = urlopen(req, timeout=30).read().decode('utf-8', 'ignore')
+          parser = LinkParser()
+          parser.feed(body)
+
+          candidates = []
+          for url in parser.links:
+              low = url.lower()
+              if 'blog.kakaocdn.net' in low and ('.zip' in low or 'tfile.zip' in low):
+                  if url not in candidates:
+                      candidates.append(url)
+
+          if not candidates:
+              raise SystemExit('No Kakao CDN ZIP link found on Inotia2 page')
+
+          errors = []
+          for url in candidates:
+              try:
+                  req = Request(url, headers={'User-Agent': ua, 'Referer': page})
+                  data = urlopen(req, timeout=60).read()
+                  digest = hashlib.sha256(data).hexdigest()
+                  print(f'candidate bytes={len(data)} sha256={digest} url={url[:120]}...')
+                  if digest != expected:
+                      errors.append(f'hash mismatch {digest}')
+                      continue
+                  if not data.startswith(b'PK'):
+                      errors.append('matching candidate is not ZIP')
+                      continue
+                  with open(out, 'wb') as f:
+                      f.write(data)
+                  print(f'Exact Inotia2 package saved: {out}')
+                  break
+              except Exception as exc:
+                  errors.append(repr(exc))
+          else:
+              raise SystemExit('Could not fetch exact Inotia2 package: ' + ' | '.join(errors))
+          PY
           ACTUAL="$(sha256sum android/app/src/androidTest/assets/inotia2-original.zip | awk '{print $1}')"
           echo "Inotia2 SHA-256: $ACTUAL"
           test "$ACTUAL" = "$INOTIA2_SHA256"
