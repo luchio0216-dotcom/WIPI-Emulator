@@ -92,6 +92,7 @@ jobs:
           cd ..
           python3 scripts/patch-inotia-min.py
           python3 scripts/patch-inotia2-certificate.py
+          python3 scripts/patch-ktf-packaged-db-seed.py
           python3 scripts/patch-inotia-storage-probe.py
           python3 scripts/patch-inotia-save-overwrite.py
           cd rust
