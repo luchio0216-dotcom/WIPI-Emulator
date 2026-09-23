@@ -1,46 +1,49 @@
 #!/usr/bin/env python3
-"""Map KTF table-7 slot 12 to the semantics W-Feature actually exposes for Inotia 2.
+"""Map KTF table-7 slot 12 to W-Feature's MC_fsAvailable semantics for Inotia 2.
 
-W-Feature revision 7fa98078 implements KTF WIPI-C table 7 as its filesystem
-interface and slot 12 as MC_fsAvailable, returning a 1 MiB per-title writable
-budget minus runtime growth.  The pinned WIE labels the same KTF slot as
-MC_dbListDataBase.  Inotia 2 reaches this slot immediately before its 2103KB
-startup gate, so for AID 010100D5 return the reference implementation's fresh
-session value.  This is deliberately D5-only; no other database semantics are
-changed.
+Pinned WIE 0e4be660 maps WIPICDatabaseMethodId::ListDatabases to an unimplemented
+stub (MC_dbListDataBase). W-Feature 7fa98078 exposes KTF table 7 slot 12 as
+MC_fsAvailable. For AID 010100D5 only, provide the reference fresh-session
+1 MiB writable budget. No other title or DB operation is changed.
 """
 from pathlib import Path
 import os
 
-AID = "010100D5"
 AVAILABLE = 1024 * 1024
-
 cargo_home = Path(os.environ.get("CARGO_HOME", str(Path.home() / ".cargo")))
 roots = list((cargo_home / "git" / "checkouts").glob("wie-*"))
-needle = "pub async fn list_databases(context: &mut dyn WIPICContext"
 marker = "Inotia 2 KTF slot 12 (MC_fsAvailable)"
 patched = []
 already = []
 
 for root in roots:
-    for path in root.glob("**/wie_wipi_c/src/api/database.rs"):
-        text = path.read_text()
-        if marker in text:
-            already.append(path)
+    for checkout in root.iterdir():
+        db = checkout / "wie_wipi_c/src/api/database.rs"
+        mt = checkout / "wie_ktf/src/runtime/wipi_c/method_table.rs"
+        if not db.is_file() or not mt.is_file():
             continue
-        start = text.find(needle)
-        if start < 0:
+
+        db_text = db.read_text()
+        mt_text = mt.read_text()
+        if marker in db_text and "database::inotia2_fs_available.into_body()" in mt_text:
+            already.append(checkout)
             continue
-        brace = text.find("{", start)
-        if brace < 0:
+
+        old = 'WIPICDatabaseMethodId::ListDatabases => Some(gen_stub(12, "MC_dbListDataBase")),'
+        if old not in mt_text:
             continue
-        injection = f'''{{\n    // {marker}: W-Feature KTF table 7 slot 12 is\n    // MC_fsAvailable, not a database enumeration.  Packaged P/ bytes do not\n    // consume this writable budget, so a fresh session reports exactly 1 MiB.\n    if context.system().aid() == "{AID}" {{\n        tracing::debug!("{marker} -> {AVAILABLE}");\n        return Ok({AVAILABLE});\n    }}'''
-        text = text[:brace] + injection + text[brace + 1:]
-        path.write_text(text)
-        patched.append(path)
+
+        fn_text = f'''\n/// {marker}.\n/// W-Feature treats KTF table 7 slot 12 as MC_fsAvailable. This compatibility\n/// body is wired only by the Inotia2-specific CI patch.\npub async fn inotia2_fs_available(_context: &mut dyn WIPICContext) -> Result<i32> {{\n    tracing::debug!("{marker} -> {AVAILABLE}");\n    Ok({AVAILABLE})\n}}\n'''
+        db.write_text(db_text + fn_text)
+        mt.write_text(mt_text.replace(
+            old,
+            'WIPICDatabaseMethodId::ListDatabases => Some(database::inotia2_fs_available.into_body()),',
+            1,
+        ))
+        patched.append(checkout)
 
 if not patched and not already:
-    raise SystemExit("Could not find pinned WIE list_databases for Inotia 2 slot-12 mapping")
+    raise SystemExit("Could not find pinned WIE KTF slot-12 stub for Inotia 2 mapping")
 for path in patched:
     print(f"Inotia2 KTF slot12 patched: {path}")
 for path in already:
