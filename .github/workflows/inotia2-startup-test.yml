@@ -14,6 +14,10 @@ on:
       - 'scripts/patch-inotia2-ktf-slot12.py'
       - '.github/workflows/inotia2-startup-test.yml'
 
+concurrency:
+  group: inotia2-startup-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   inotia2-startup:
     runs-on: ubuntu-latest
@@ -161,8 +165,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p inotia2-startup-result
-          find android/app/build -type f \( -name 'inotia2-frame-*.png' -o -name 'inotia2-report.txt' -o -name '*.xml' \) -print -exec cp {} inotia2-startup-result/ \; || true
-          adb logcat -d > inotia2-startup-result/logcat.txt 2>/dev/null || true
+          timeout 30s find android/app/build -type f \( -name 'inotia2-frame-*.png' -o -name 'inotia2-report.txt' -o -name '*.xml' \) -print -exec cp {} inotia2-startup-result/ \; || true
+          timeout 20s adb logcat -d > inotia2-startup-result/logcat.txt 2>/dev/null || true
 
       - name: Upload Inotia2 startup result
         if: always()
