@@ -34,6 +34,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -112,7 +116,7 @@ jobs:
           profile: pixel_2
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          script: ./android/gradlew -p android :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.parkjeongseop.wipi.Inotia2StartupTest --stacktrace
+          script: gradle -p android :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.parkjeongseop.wipi.Inotia2StartupTest --stacktrace
       - name: Collect Inotia2 diagnostics
         if: always()
         shell: bash
