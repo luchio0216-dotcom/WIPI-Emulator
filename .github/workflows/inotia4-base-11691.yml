@@ -1,0 +1,29 @@
+name: Inotia4 base 11691 probe
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/inotia4-base-11691.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download candidate base
+        run: |
+          curl -fL --retry 4 --retry-delay 2 \
+            -A 'Mozilla/5.0 GitHub-Actions-Inotia4-CI' \
+            -e 'https://www.vkxiazai.com/game/11691.html' \
+            'https://api.vkxiazai.com/down/11691' \
+            -o "$RUNNER_TEMP/base.apk"
+          md5sum "$RUNNER_TEMP/base.apk"
+          sha256sum "$RUNNER_TEMP/base.apk"
+          unzip -l "$RUNNER_TEMP/base.apk" classes.dex || true
+      - name: Upload base
+        uses: actions/upload-artifact@v4
+        with:
+          name: inotia4-base-11691
+          path: ${{ runner.temp }}/base.apk
+          retention-days: 1
