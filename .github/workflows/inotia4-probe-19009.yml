@@ -1,0 +1,26 @@
+name: Inotia4 alternate source probe
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/inotia4-probe-19009.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe source 19009
+        shell: bash
+        run: |
+          curl -fL --retry 3 --retry-delay 2 \
+            -A 'Mozilla/5.0 GitHub-Actions-Inotia4-CI' \
+            -e 'https://www.vkxiazai.com/game/19009.html' \
+            'https://api.vkxiazai.com/down/19009' \
+            -o "$RUNNER_TEMP/candidate.apk"
+          stat -c '%s bytes' "$RUNNER_TEMP/candidate.apk"
+          md5sum "$RUNNER_TEMP/candidate.apk"
+          sha256sum "$RUNNER_TEMP/candidate.apk"
