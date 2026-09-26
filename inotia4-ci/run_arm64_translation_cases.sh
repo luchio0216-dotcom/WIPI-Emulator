@@ -15,6 +15,7 @@ run_case() {
 }
 
 set -e
+run_case exact-original
 run_case resigned-control
 run_case patched-999
 
