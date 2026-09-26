@@ -1,0 +1,20 @@
+name: Inotia4 xlhs source probe
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/inotia4-xlhs-probe.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Inspect download links
+        shell: bash
+        run: |
+          set -x
+          curl -L --fail --max-time 30 -A 'Mozilla/5.0' 'https://www.xlhs.com/azgame/56599.html' -o "$RUNNER_TEMP/page.html" || exit 0
+          grep -Eo 'https?://[^"'"'"' <>]+' "$RUNNER_TEMP/page.html" | grep -Ei 'apk|down|56599|inotia' | head -100 || true
+          grep -Eo 'href=["'"'][^"'"']+["'"']' "$RUNNER_TEMP/page.html" | grep -Ei 'apk|down|56599' | head -100 || true
