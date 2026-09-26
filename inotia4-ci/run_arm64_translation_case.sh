@@ -32,33 +32,38 @@ SOURCE_RESOURCE_SHA256="$(sha256sum "$WORK/original-resource" | awk '{print $1}'
 echo "source_resource_sha256=$SOURCE_RESOURCE_SHA256" | tee "$LOGDIR/resource-hashes.txt"
 [[ "$SOURCE_RESOURCE_SHA256" == "$ORIGINAL_RESOURCE_SHA256" ]] || exit 15
 
-UNSIGNED="$WORK/unsigned.apk"
-cp "$EXACT_APK" "$UNSIGNED"
-zip -q -d "$UNSIGNED" 'META-INF/*.RSA' 'META-INF/*.DSA' 'META-INF/*.EC' 'META-INF/*.SF' 'META-INF/*.MF' >/dev/null 2>&1 || true
+if [[ "$CASE_NAME" == "exact-original" ]]; then
+  SIGNED="$EXACT_APK"
+  echo "signature_mode=original-untouched" > "$LOGDIR/signature.txt"
+else
+  UNSIGNED="$WORK/unsigned.apk"
+  cp "$EXACT_APK" "$UNSIGNED"
+  zip -q -d "$UNSIGNED" 'META-INF/*.RSA' 'META-INF/*.DSA' 'META-INF/*.EC' 'META-INF/*.SF' 'META-INF/*.MF' >/dev/null 2>&1 || true
 
-if [[ "$CASE_NAME" == "patched-999" ]]; then
-  base64 -d "$CI_DIR/patches/memorytext_e.dat.jpg.b64" > "$WORK/patched-resource"
-  [[ "$(sha256sum "$WORK/patched-resource" | awk '{print $1}')" == "$PATCHED_RESOURCE_SHA256" ]] || exit 13
-  zip -q -d "$UNSIGNED" "$TARGET_ENTRY"
-  mkdir -p "$WORK/inject/assets/common/game_res"
-  cp "$WORK/patched-resource" "$WORK/inject/$TARGET_ENTRY"
-  (cd "$WORK/inject" && zip -q -0 "$UNSIGNED" "$TARGET_ENTRY")
-  INSTALLED_PATCH_SHA="$(unzip -p "$UNSIGNED" "$TARGET_ENTRY" | sha256sum | awk '{print $1}')"
-  echo "installed_patch_sha256=$INSTALLED_PATCH_SHA" | tee -a "$LOGDIR/resource-hashes.txt"
-  [[ "$INSTALLED_PATCH_SHA" == "$PATCHED_RESOURCE_SHA256" ]] || exit 16
-fi
+  if [[ "$CASE_NAME" == "patched-999" ]]; then
+    base64 -d "$CI_DIR/patches/memorytext_e.dat.jpg.b64" > "$WORK/patched-resource"
+    [[ "$(sha256sum "$WORK/patched-resource" | awk '{print $1}')" == "$PATCHED_RESOURCE_SHA256" ]] || exit 13
+    zip -q -d "$UNSIGNED" "$TARGET_ENTRY"
+    mkdir -p "$WORK/inject/assets/common/game_res"
+    cp "$WORK/patched-resource" "$WORK/inject/$TARGET_ENTRY"
+    (cd "$WORK/inject" && zip -q -0 "$UNSIGNED" "$TARGET_ENTRY")
+    INSTALLED_PATCH_SHA="$(unzip -p "$UNSIGNED" "$TARGET_ENTRY" | sha256sum | awk '{print $1}')"
+    echo "installed_patch_sha256=$INSTALLED_PATCH_SHA" | tee -a "$LOGDIR/resource-hashes.txt"
+    [[ "$INSTALLED_PATCH_SHA" == "$PATCHED_RESOURCE_SHA256" ]] || exit 16
+  fi
 
-APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n1)"
-ZIPALIGN="$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -n1)"
-KEYSTORE="$RUNNER_TEMP/inotia4-ci-signing.jks"
-if [[ ! -f "$KEYSTORE" ]]; then
-  keytool -genkeypair -noprompt -keystore "$KEYSTORE" -storepass android -keypass android -alias inotia4-ci -keyalg RSA -keysize 2048 -validity 3650 -dname 'CN=Inotia4 CI,OU=Testing,O=Local,L=Seoul,ST=Seoul,C=KR'
+  APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n1)"
+  ZIPALIGN="$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -n1)"
+  KEYSTORE="$RUNNER_TEMP/inotia4-ci-signing.jks"
+  if [[ ! -f "$KEYSTORE" ]]; then
+    keytool -genkeypair -noprompt -keystore "$KEYSTORE" -storepass android -keypass android -alias inotia4-ci -keyalg RSA -keysize 2048 -validity 3650 -dname 'CN=Inotia4 CI,OU=Testing,O=Local,L=Seoul,ST=Seoul,C=KR'
+  fi
+  ALIGNED="$WORK/aligned.apk"
+  SIGNED="$WORK/signed.apk"
+  "$ZIPALIGN" -P 16 -f 4 "$UNSIGNED" "$ALIGNED"
+  "$APKSIGNER" sign --ks "$KEYSTORE" --ks-key-alias inotia4-ci --ks-pass pass:android --key-pass pass:android --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --out "$SIGNED" "$ALIGNED"
+  "$APKSIGNER" verify --verbose --print-certs "$SIGNED" > "$LOGDIR/signature.txt" 2>&1
 fi
-ALIGNED="$WORK/aligned.apk"
-SIGNED="$WORK/signed.apk"
-"$ZIPALIGN" -P 16 -f 4 "$UNSIGNED" "$ALIGNED"
-"$APKSIGNER" sign --ks "$KEYSTORE" --ks-key-alias inotia4-ci --ks-pass pass:android --key-pass pass:android --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --out "$SIGNED" "$ALIGNED"
-"$APKSIGNER" verify --verbose --print-certs "$SIGNED" > "$LOGDIR/signature.txt" 2>&1
 
 if [[ "$CASE_NAME" == "patched-999" ]]; then
   mkdir -p "$LOGDIR/tested-apks"
@@ -89,7 +94,16 @@ START_RC=${PIPESTATUS[0]}
 set -e
 [[ $START_RC -eq 0 || $START_RC -eq 124 ]] || exit 22
 
-sleep 2
+: > "$LOGDIR/process-timeline.txt"
+for tick in 0 1 2 3 4 5 6; do
+  {
+    echo "tick_${tick}_pid=$(adb shell pidof "$PACKAGE" 2>/dev/null | tr -d '\r' || true)"
+    echo "tick_${tick}_resumed=$(adb shell dumpsys activity activities 2>/dev/null | grep -m1 -E 'mResumedActivity|topResumedActivity' || true)"
+    echo "tick_${tick}_focus=$(adb shell dumpsys window windows 2>/dev/null | grep -m1 -E 'mCurrentFocus|mFocusedApp' || true)"
+  } >> "$LOGDIR/process-timeline.txt"
+  sleep 0.5
+done
+cat "$LOGDIR/process-timeline.txt"
 adb shell input keyevent 66 >/dev/null 2>&1 || true
 adb shell input tap 900 1750 >/dev/null 2>&1 || true
 
@@ -113,6 +127,10 @@ R30=0; sample_state 30s || R30=$?
 sleep 30
 R60=0; sample_state 60s || R60=$?
 adb logcat -d -b all -v threadtime > "$LOGDIR/logcat.txt" || true
+grep -Ei 'FATAL EXCEPTION|Fatal signal|SIGSEGV|SIGABRT|ANR in|has died|am_crash|am_kill|linker|dlopen|UnsatisfiedLinkError|SecurityException|signature|certificate|StubApp|Hercules|libgame|jiagu|com2us|inotia4' "$LOGDIR/logcat.txt" | tail -n 500 > "$LOGDIR/launch-diagnostics.txt" || true
+echo "diagnostic_lines_begin"
+cat "$LOGDIR/launch-diagnostics.txt"
+echo "diagnostic_lines_end"
 FATAL="$(grep -E 'FATAL EXCEPTION|Fatal signal|SIGSEGV|SIGABRT|ANR in|has died' "$LOGDIR/logcat.txt" | grep -Ei 'inotia4|com2us|StubApp|Hercules|libgame|jiagu' || true)"
 SCREENSHOT_OK=yes
 for shot in "$LOGDIR"/screenshot-*.png; do
