@@ -147,7 +147,64 @@ if [[ -z "$X86_SPLIT" ]]; then
   exit 17
 fi
 
-echo "x86_split=$X86_SPLIT" | tee "$LOGDIR/runtime-surrogate.txt"
+OFFICIAL_BASE=""
+while IFS= read -r apk; do
+  name="$(basename "$apk")"
+  if [[ "$name" != config.*.apk && "$name" != split_config.*.apk ]]; then
+    OFFICIAL_BASE="$apk"
+    break
+  fi
+done < <(find "$XAPK_DIR" -type f -name '*.apk' | sort)
+if [[ -z "$OFFICIAL_BASE" ]]; then
+  OFFICIAL_BASE="$(find "$XAPK_DIR" -type f -name '*.apk' -printf '%s %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+fi
+
+{
+  echo "x86_split=$X86_SPLIT"
+  echo "official_base=$OFFICIAL_BASE"
+  for entry in classes.dex AndroidManifest.xml resources.arsc; do
+    exact_hash="$(unzip -p "$EXACT_APK" "$entry" 2>/dev/null | sha256sum | awk '{print $1}')"
+    official_hash="$(unzip -p "$OFFICIAL_BASE" "$entry" 2>/dev/null | sha256sum | awk '{print $1}')"
+    safe_entry="$(printf '%s' "$entry" | tr -c 'A-Za-z0-9' '_')"
+    echo "exact_${safe_entry}_sha256=$exact_hash"
+    echo "official_${safe_entry}_sha256=$official_hash"
+  done
+  echo "exact_native_entries_begin"
+  unzip -Z1 "$EXACT_APK" | grep '^lib/' | sort || true
+  echo "exact_native_entries_end"
+  echo "official_x86_entries_begin"
+  unzip -Z1 "$X86_SPLIT" | grep '^lib/x86/' | sort || true
+  echo "official_x86_entries_end"
+} | tee "$LOGDIR/runtime-surrogate.txt"
+
+# Establish whether the official 1.3.9 x86 package itself survives on this
+# emulator. This is diagnostic only and never relaxes the exact-source checks.
+if [[ "$CASE_NAME" == "resigned-control" ]]; then
+  mapfile -t OFFICIAL_APKS < <(find "$XAPK_DIR" -type f -name '*.apk' | sort)
+  adb wait-for-device
+  adb uninstall "$PACKAGE" >/dev/null 2>&1 || true
+  adb logcat -c || true
+  set +e
+  adb install-multiple -r -t "${OFFICIAL_APKS[@]}" 2>&1 | tee "$LOGDIR/official-x86-install.txt"
+  OFFICIAL_INSTALL_RC=${PIPESTATUS[0]}
+  set -e
+  if [[ $OFFICIAL_INSTALL_RC -eq 0 ]]; then
+    OFFICIAL_ACTIVITY="$(adb shell cmd package resolve-activity --brief "$PACKAGE" 2>/dev/null | tr -d '\r' | tail -n1 || true)"
+    timeout 10s adb shell am start -n "$OFFICIAL_ACTIVITY" > "$LOGDIR/official-x86-am-start.txt" 2>&1 || true
+    sleep 8
+    {
+      echo "official_pid=$(adb shell pidof "$PACKAGE" 2>/dev/null | tr -d '\r' || true)"
+      echo "official_resumed=$(adb shell dumpsys activity activities 2>/dev/null | grep -m1 -E 'mResumedActivity|topResumedActivity' || true)"
+      echo "official_focus=$(adb shell dumpsys window windows 2>/dev/null | grep -m1 -E 'mCurrentFocus|mFocusedApp' || true)"
+    } | tee "$LOGDIR/official-x86-state.txt"
+    adb exec-out screencap -p > "$LOGDIR/official-x86-screenshot.png" || true
+    adb logcat -d -b all -v threadtime > "$LOGDIR/official-x86-logcat.txt" || true
+  else
+    echo "official_install_rc=$OFFICIAL_INSTALL_RC" | tee "$LOGDIR/official-x86-state.txt"
+  fi
+  adb uninstall "$PACKAGE" >/dev/null 2>&1 || true
+fi
+
 SURROGATE_UNSIGNED="$WORK/surrogate-unsigned.apk"
 cp "$UNSIGNED" "$SURROGATE_UNSIGNED"
 zip -q -d "$SURROGATE_UNSIGNED" 'lib/arm64-v8a/*' 'lib/armeabi-v7a/*' 'lib/x86/*' 'lib/x86_64/*' >/dev/null 2>&1 || true
@@ -186,16 +243,32 @@ fi
 
 adb logcat -c || true
 set +e
-adb shell am start -W -n "$RESOLVED_ACTIVITY" 2>&1 | tee "$LOGDIR/am-start.txt"
+timeout 10s adb shell am start -n "$RESOLVED_ACTIVITY" 2>&1 | tee "$LOGDIR/am-start.txt"
 START_RC=${PIPESTATUS[0]}
 set -e
+if [[ $START_RC -eq 124 ]]; then
+  echo "am_start_timeout=10s" | tee -a "$LOGDIR/am-start.txt"
+  START_RC=0
+fi
 if [[ $START_RC -ne 0 ]]; then
   echo "RESULT=$CASE_NAME START_FAIL rc=$START_RC" | tee "$LOGDIR/summary.txt"
   exit 22
 fi
 
+# Capture the first seconds at high resolution: protected/native apps can exit
+# before the first 5-second checkpoint without emitting a Java exception.
+: > "$LOGDIR/process-timeline.txt"
+for tick in 0 1 2 3 4 5 6; do
+  {
+    echo "tick_${tick}_pid=$(adb shell pidof "$PACKAGE" 2>/dev/null | tr -d '\r' || true)"
+    echo "tick_${tick}_resumed=$(adb shell dumpsys activity activities 2>/dev/null | grep -m1 -E 'mResumedActivity|topResumedActivity' || true)"
+    echo "tick_${tick}_focus=$(adb shell dumpsys window windows 2>/dev/null | grep -m1 -E 'mCurrentFocus|mFocusedApp' || true)"
+  } >> "$LOGDIR/process-timeline.txt"
+  sleep 0.5
+done
+cat "$LOGDIR/process-timeline.txt"
+
 # Dismiss Android's one-time immersive-mode education overlay if it appears.
-sleep 2
 adb shell input keyevent 66 >/dev/null 2>&1 || true
 adb shell input tap 900 1750 >/dev/null 2>&1 || true
 
@@ -224,7 +297,20 @@ sleep 20
 STATE30_RC=0; sample_state 30s || STATE30_RC=$?
 sleep 30
 STATE60_RC=0; sample_state 60s || STATE60_RC=$?
-adb logcat -d -v threadtime > "$LOGDIR/logcat.txt" || true
+adb logcat -d -b all -v threadtime > "$LOGDIR/logcat.txt" || true
+adb shell dumpsys package "$PACKAGE" > "$LOGDIR/dumpsys-package.txt" 2>&1 || true
+adb shell dumpsys activity processes > "$LOGDIR/dumpsys-processes.txt" 2>&1 || true
+adb root >/dev/null 2>&1 || true
+adb wait-for-device || true
+adb shell ls -la /data/tombstones > "$LOGDIR/tombstones-list.txt" 2>&1 || true
+mkdir -p "$LOGDIR/tombstones"
+adb pull /data/tombstones "$LOGDIR/tombstones" > "$LOGDIR/tombstones-pull.txt" 2>&1 || true
+
+grep -Ei 'FATAL EXCEPTION|Fatal signal|SIGSEGV|SIGABRT|ANR in|has died|linker|dlopen failed|UnsatisfiedLinkError|SecurityException|signature|certificate|Hercules|StubApp|libgame|com2us|inotia4' "$LOGDIR/logcat.txt" \
+  | tail -n 400 > "$LOGDIR/launch-diagnostics.txt" || true
+echo "diagnostic_lines_begin"
+cat "$LOGDIR/launch-diagnostics.txt"
+echo "diagnostic_lines_end"
 
 FATAL_LINES="$(grep -E 'FATAL EXCEPTION|Fatal signal|SIGSEGV|SIGABRT|ANR in|has died' "$LOGDIR/logcat.txt" | grep -Ei 'inotia4|com2us|StubApp|Hercules|libgame' || true)"
 SYSTEM_OVERLAY=no
