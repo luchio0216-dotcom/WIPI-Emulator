@@ -1,0 +1,115 @@
+name: Inotia real overwrite save test
+
+on:
+  push:
+    branches: [feature/p-data-import]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-save-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Prepare Inotia package and private user WFS
+        shell: bash
+        env:
+          INOTIA_USER_WFS_B64: ${{ secrets.INOTIA_USER_WFS_B64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/inotia android/app/src/androidTest/assets
+          if [ -z "${INOTIA_USER_WFS_B64:-}" ]; then
+            echo 'Missing GitHub Actions secret INOTIA_USER_WFS_B64' >&2
+            exit 2
+          fi
+          printf '%s' "$INOTIA_USER_WFS_B64" | base64 --decode > android/app/src/androidTest/assets/inotia_user_slot1.wfs
+          python3 - <<'PY'
+          import hashlib, pathlib
+          p=pathlib.Path('android/app/src/androidTest/assets/inotia_user_slot1.wfs')
+          b=p.read_bytes()
+          assert len(b)==703, len(b)
+          assert hashlib.sha256(b).hexdigest()=='32f4404f36930317a8a102b079e6da105fc8628837e53a7606dbf8a9b81ec918'
+          assert b[:8]==b'WFSAVEBK'
+          print('Private WFS fixture verified:', len(b), 'bytes')
+          PY
+          unset INOTIA_USER_WFS_B64
+
+          curl -fsSL -A 'Mozilla/5.0' 'https://dubigame.tistory.com/135' -o /tmp/inotia/page.html
+          python3 - <<'PY'
+          import html,re,subprocess,pathlib,zipfile
+          page=pathlib.Path('/tmp/inotia/page.html').read_text(errors='ignore')
+          urls=[]
+          for raw in re.findall(r'href=["\']([^"\']+)["\']',page,flags=re.I):
+              u=html.unescape(raw)
+              if 'blog.kakaocdn.net' in u and ('.zip' in u.lower() or 'tfile.zip' in u.lower()): urls.append(u)
+          if not urls: raise SystemExit('Inotia ZIP URL not found')
+          subprocess.run(['curl','-fL','--retry','3','-A','Mozilla/5.0','-e','https://dubigame.tistory.com/135',urls[0],'-o','/tmp/inotia/original.zip'],check=True)
+          src=zipfile.ZipFile('/tmp/inotia/original.zip')
+          names=[n.replace('\\','/') for n in src.namelist()]
+          adf=next((n for n in names if n=='__adf__' or n.endswith('/__adf__')),None)
+          if not adf: raise SystemExit('__adf__ missing')
+          prefix=adf[:-len('__adf__')]
+          with zipfile.ZipFile('android/app/src/androidTest/assets/inotia1_flat.zip','w',zipfile.ZIP_DEFLATED) as out:
+              for info in src.infolist():
+                  n=info.filename.replace('\\','/')
+                  if info.is_dir() or not n.startswith(prefix): continue
+                  rel=n[len(prefix):]
+                  if rel: out.writestr(rel,src.read(info))
+          PY
+
+      - name: Build patched x86_64 JNI
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
+          rustup target add x86_64-linux-android
+          TOOLCHAIN="$ANDROID_HOME/ndk/27.1.12297006/toolchains/llvm/prebuilt/linux-x86_64"
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$TOOLCHAIN/bin/x86_64-linux-android26-clang"
+          export CC_x86_64_linux_android="$TOOLCHAIN/bin/x86_64-linux-android26-clang"
+          export AR_x86_64_linux_android="$TOOLCHAIN/bin/llvm-ar"
+          export CFLAGS_x86_64_linux_android="-D__ANDROID_API__=26"
+          cd rust; cargo fetch; cd ..
+          python3 scripts/patch-inotia-min.py
+          python3 scripts/patch-inotia-storage-probe.py
+          python3 scripts/patch-inotia-save-overwrite.py
+          cd rust; cargo build -p wipi_android --release --target x86_64-linux-android; cd ..
+          mkdir -p android/app/src/main/jniLibs/x86_64
+          cp rust/target/x86_64-linux-android/release/libwipi_android.so android/app/src/main/jniLibs/x86_64/
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+
+      - name: Import real WFS, overwrite SLOT 1, force-stop live process, relaunch and reload
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
+          script: bash scripts/run-inotia-real-save-test.sh
+
+      - name: Upload save evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inotia-real-save-result
+          path: inotia-save-result/
+          if-no-files-found: warn
+          retention-days: 14
