@@ -1,0 +1,27 @@
+name: Inotia4 Wayback probe
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/inotia4-wayback-probe.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Query archived download endpoint
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -L --fail --max-time 30 \
+            'https://web.archive.org/cdx/search/cdx?url=api.vkxiazai.com/down/19009&output=json&filter=statuscode:200&fl=timestamp,original,digest,length&collapse=digest' \
+            -o "$RUNNER_TEMP/cdx.json" || true
+          cat "$RUNNER_TEMP/cdx.json" 2>/dev/null || true
+          curl -L --fail --max-time 30 \
+            'https://web.archive.org/cdx/search/cdx?url=api.vkxiazai.com/down/19006&output=json&filter=statuscode:200&fl=timestamp,original,digest,length&collapse=digest' \
+            -o "$RUNNER_TEMP/cdx2.json" || true
+          cat "$RUNNER_TEMP/cdx2.json" 2>/dev/null || true
