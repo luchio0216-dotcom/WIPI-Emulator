@@ -15,13 +15,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: inotia4-apk-ci-kvm-v2
+  group: inotia4-apk-ci-strict-v3
   cancel-in-progress: true
 
 jobs:
   android-launch-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
@@ -36,6 +36,7 @@ jobs:
             ls -l /dev/kvm
           else
             echo '/dev/kvm is not available on this runner'
+            exit 1
           fi
 
       - name: Verify patched resource fixture
@@ -46,21 +47,21 @@ jobs:
           sha256sum "$RUNNER_TEMP/memorytext_e.dat.jpg"
           test "$(sha256sum "$RUNNER_TEMP/memorytext_e.dat.jpg" | awk '{print $1}')" = "75bb655c8c2cd3e89a28e8b90e1e6d1d7900f26521dc5aece8572964079cb3ee"
 
-      - name: Run original, re-signed control, and patched diagnostic cases
+      - name: Run strict original, re-signed, and patched diagnostics
         id: emulator-test
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 28
+          api-level: 35
           target: google_apis
-          arch: x86
-          profile: pixel_2
+          arch: x86_64
+          profile: pixel_7
           disable-animations: true
           disable-linux-hw-accel: false
           emulator-boot-timeout: 240
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -no-metrics
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none -no-metrics
           script: bash inotia4-ci/run_all_cases.sh
 
-      - name: Upload diagnostic logs and screenshots
+      - name: Upload diagnostic logs, screenshots, and tested APKs
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -69,7 +70,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Evaluate launch results
+      - name: Evaluate strict launch results
         if: always()
         shell: bash
         run: |
@@ -91,3 +92,7 @@ jobs:
           if [[ "$OFFICIAL_RC" != "0" || "$RESIGNED_RC" != "0" || "$PATCHED_RC" != "0" ]]; then
             exit 1
           fi
+
+          grep -q '^RESULT=patched-999 FOREGROUND_60S_OK$' inotia4-ci/test-results/patched-999/summary.txt
+          grep -q '^resource_fixture_match=yes$' inotia4-ci/test-results/patched-999/resource-hashes.txt
+          grep -q '^installed_patch_sha256=75bb655c8c2cd3e89a28e8b90e1e6d1d7900f26521dc5aece8572964079cb3ee$' inotia4-ci/test-results/patched-999/resource-hashes.txt
