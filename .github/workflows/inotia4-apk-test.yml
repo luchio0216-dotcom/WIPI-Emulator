@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: inotia4-apk-ci
+  group: inotia4-apk-ci-kvm-v2
   cancel-in-progress: true
 
 jobs:
