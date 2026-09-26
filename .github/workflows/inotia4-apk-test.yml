@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: inotia4-apk-ci-exact-source-v1
+  group: inotia4-apk-ci-exact-source-v2
   cancel-in-progress: true
 
 jobs:
@@ -97,7 +97,8 @@ jobs:
           grep -q '^RESULT=patched-999 FOREGROUND_60S_OK$' inotia4-ci/test-results/patched-999/summary.txt 2>/dev/null || PASS=0
           grep -q '^resource_fixture_match=yes$' inotia4-ci/test-results/patched-999/resource-hashes.txt 2>/dev/null || PASS=0
           grep -q '^installed_patch_sha256=75bb655c8c2cd3e89a28e8b90e1e6d1d7900f26521dc5aece8572964079cb3ee$' inotia4-ci/test-results/patched-999/resource-hashes.txt 2>/dev/null || PASS=0
-          grep -q '^exact_source_md5=650cf86aac816e651a56c8642b03afa7$' inotia4-ci/test-results/patched-999/source-fingerprint.txt 2>/dev/null || PASS=0
+          grep -q '^exact_source_md5=5cd0d4f745e3f038387b5328cd52fa65$' inotia4-ci/test-results/patched-999/source-fingerprint.txt 2>/dev/null || PASS=0
+          grep -q '^exact_source_sha256=36b0e5502f53f86bf0689f438a433dce740612b60a51b8a38a170fe3575fabc5$' inotia4-ci/test-results/patched-999/source-fingerprint.txt 2>/dev/null || PASS=0
           test -s inotia4-ci/test-results/patched-999/tested-apks/Inotia4_Berserker_Buffs_999s_arm64_candidate.apk || PASS=0
 
           if [[ "$PASS" == "1" ]]; then
