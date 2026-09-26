@@ -1,0 +1,28 @@
+name: Build xdelta helper
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/build-xdelta-tool.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install xdelta3
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y xdelta3
+          cp "$(command -v xdelta3)" "$RUNNER_TEMP/xdelta3"
+          chmod +x "$RUNNER_TEMP/xdelta3"
+          "$RUNNER_TEMP/xdelta3" -V || true
+      - name: Upload xdelta3
+        uses: actions/upload-artifact@v4
+        with:
+          name: xdelta3-linux
+          path: ${{ runner.temp }}/xdelta3
+          retention-days: 1
