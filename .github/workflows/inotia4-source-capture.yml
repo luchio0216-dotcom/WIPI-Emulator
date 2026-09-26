@@ -1,0 +1,31 @@
+name: Inotia4 source capture
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/inotia4-source-capture.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download current mirror payload
+        shell: bash
+        run: |
+          curl -fL --retry 4 --retry-delay 3 \
+            -A 'Mozilla/5.0 GitHub-Actions-Inotia4-CI' \
+            -e 'https://www.vkxiazai.com/game/19006.html' \
+            'https://api.vkxiazai.com/down/19006' \
+            -o "$RUNNER_TEMP/inotia4-mirror.apk"
+          md5sum "$RUNNER_TEMP/inotia4-mirror.apk"
+          sha256sum "$RUNNER_TEMP/inotia4-mirror.apk"
+      - name: Upload mirror payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: inotia4-mirror-payload
+          path: ${{ runner.temp }}/inotia4-mirror.apk
+          retention-days: 2
