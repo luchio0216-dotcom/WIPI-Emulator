@@ -21,11 +21,22 @@ concurrency:
 jobs:
   android-launch-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Enable KVM acceleration
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [[ -e /dev/kvm ]]; then
+            sudo chmod 666 /dev/kvm
+            ls -l /dev/kvm
+          else
+            echo '/dev/kvm is not available on this runner'
+          fi
 
       - name: Verify patched resource fixture
         shell: bash
@@ -44,6 +55,8 @@ jobs:
           arch: x86
           profile: pixel_2
           disable-animations: true
+          disable-linux-hw-accel: false
+          emulator-boot-timeout: 240
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -no-metrics
           script: bash inotia4-ci/run_all_cases.sh
 
