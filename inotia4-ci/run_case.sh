@@ -9,18 +9,22 @@ LOGDIR="$CI_DIR/test-results/$CASE_NAME"
 TARGET_ENTRY="assets/common/game_res/memorytext_e.dat.jpg"
 PACKAGE="com.com2us.inotia4.normal.freefull.google.global.android.common"
 
-# This is the exact v1.3.9 APK supplied in chat, identified independently by
-# its whole-file MD5/SHA-256. The public page advertises the same MD5.
+# Exact source selected by the user in chat: andy4_19006.apk.
+# Local verification of that uploaded file:
+#   MD5    5cd0d4f745e3f038387b5328cd52fa65
+#   SHA256 36b0e5502f53f86bf0689f438a433dce740612b60a51b8a38a170fe3575fabc5
+# The download endpoint below currently returns the byte-identical APK, so CI
+# accepts it only when BOTH whole-file hashes match these pinned values.
 EXACT_APK_URL="https://api.vkxiazai.com/down/19006"
 EXACT_APK_REFERER="https://www.vkxiazai.com/game/19006.html"
-EXACT_APK_MD5="650cf86aac816e651a56c8642b03afa7"
-EXACT_APK_SHA256="e16e474049ddd258787c48db51401c59bff69a4718d5594409c4520ecdcb4a64"
+EXACT_APK_MD5="5cd0d4f745e3f038387b5328cd52fa65"
+EXACT_APK_SHA256="36b0e5502f53f86bf0689f438a433dce740612b60a51b8a38a170fe3575fabc5"
 USER_ORIGINAL_RESOURCE_SHA256="4e674cc35edf276e466c66b8c7562586f9d7c5e46bbb712a90bc8945c0705a22"
 USER_PATCHED_RESOURCE_SHA256="75bb655c8c2cd3e89a28e8b90e1e6d1d7900f26521dc5aece8572964079cb3ee"
 
 # APKPure is used only to obtain the x86 native libraries needed by GitHub's
 # accelerated API-28 x86 emulator. Game resources/classes come from the exact
-# user-matching APK above.
+# user-selected APK above.
 XAPK_URL="https://d.apkpure.net/b/XAPK/com.com2us.inotia4.normal.freefull.google.global.android.common?versionCode=139004"
 
 rm -rf "$WORK"
@@ -28,7 +32,7 @@ mkdir -p "$WORK" "$LOGDIR"
 
 EXACT_APK="$RUNNER_TEMP/inotia4-exact-user-match.apk"
 if [[ ! -s "$EXACT_APK" ]]; then
-  echo "Downloading exact user-matching Inotia4 1.3.9 APK..."
+  echo "Downloading byte-identical copy of user-selected andy4_19006.apk..."
   curl -fL --retry 4 --retry-delay 3 \
     -A 'Mozilla/5.0 GitHub-Actions-Inotia4-CI' \
     -e "$EXACT_APK_REFERER" \
@@ -113,9 +117,8 @@ sign_apk() {
   "$ZIPALIGN" -c -P 16 -v 4 "$output" >> "$LOGDIR/zipalign.txt" 2>&1
 }
 
-# Build the real arm64 artifact from the exact matching source. This is the APK
-# that will ultimately be handed to the Fold7, but it is not falsely labelled
-# runtime-verified until the surrogate runtime checks below also pass.
+# Build the real arm64 artifact from the exact user-selected source. This is the
+# APK intended for Fold7 testing after the launch-surrogate checks pass.
 if [[ "$CASE_NAME" == "patched-999" ]]; then
   mkdir -p "$LOGDIR/tested-apks"
   ARM_CANDIDATE="$LOGDIR/tested-apks/Inotia4_Berserker_Buffs_999s_arm64_candidate.apk"
@@ -124,8 +127,8 @@ if [[ "$CASE_NAME" == "patched-999" ]]; then
 fi
 
 # GitHub's accelerated runner is x86. Transplant only x86 native libraries
-# from the official 1.3.9 bundle while retaining the exact user's classes,
-# manifest and game resources. This is a runtime surrogate, never the Fold7 APK.
+# from official 1.3.9 while retaining the selected APK's classes, manifest and
+# game resources. This surrogate is used only for automated launch checking.
 XAPK="$RUNNER_TEMP/inotia4-official-139004.xapk"
 if [[ ! -s "$XAPK" ]]; then
   curl -fL --retry 5 --retry-delay 3 -A 'Mozilla/5.0 GitHub-Actions-Inotia4-CI' "$XAPK_URL" -o "$XAPK"
@@ -211,7 +214,11 @@ sample_state() {
   return 0
 }
 
-sleep 8
+# A launch that immediately closes is a hard failure. We sample at 5s as well
+# as 10/30/60s so the CI catches the Fold7 symptom described by the user.
+sleep 3
+STATE5_RC=0; sample_state 5s || STATE5_RC=$?
+sleep 5
 STATE10_RC=0; sample_state 10s || STATE10_RC=$?
 sleep 20
 STATE30_RC=0; sample_state 30s || STATE30_RC=$?
@@ -223,20 +230,32 @@ FATAL_LINES="$(grep -E 'FATAL EXCEPTION|Fatal signal|SIGSEGV|SIGABRT|ANR in|has 
 SYSTEM_OVERLAY=no
 if [[ -f "$LOGDIR/window-60s.xml" ]] && grep -Eqi 'Viewing full screen|GOT IT|full.?screen education|immersive' "$LOGDIR/window-60s.xml"; then SYSTEM_OVERLAY=yes; fi
 
+# The game is largely native-rendered, so UIAutomator cannot reliably read the
+# title text. Require the captured frame to contain substantial rendered image
+# data rather than a tiny/empty capture; screenshots remain attached for visual
+# verification against the Google Play Games / Chinese prompt / Inotia IV title
+# screens supplied by the user.
+SCREENSHOT_OK=yes
+for shot in "$LOGDIR/screenshot-5s.png" "$LOGDIR/screenshot-10s.png" "$LOGDIR/screenshot-30s.png" "$LOGDIR/screenshot-60s.png"; do
+  if [[ ! -s "$shot" || $(stat -c %s "$shot") -lt 20000 ]]; then SCREENSHOT_OK=no; fi
+done
+
 {
   echo "case=$CASE_NAME"
   echo "start_rc=$START_RC"
+  echo "state5_rc=$STATE5_RC"
   echo "state10_rc=$STATE10_RC"
   echo "state30_rc=$STATE30_RC"
   echo "state60_rc=$STATE60_RC"
   echo "system_overlay_60s=$SYSTEM_OVERLAY"
+  echo "screenshots_nonempty=$SCREENSHOT_OK"
   echo "source_resource_sha256=$SOURCE_RESOURCE_SHA256"
   echo "fatal_lines_begin"
   printf '%s\n' "$FATAL_LINES"
   echo "fatal_lines_end"
 } | tee "$LOGDIR/summary.txt"
 
-if [[ $STATE10_RC -ne 0 || $STATE30_RC -ne 0 || $STATE60_RC -ne 0 ]]; then
+if [[ $STATE5_RC -ne 0 || $STATE10_RC -ne 0 || $STATE30_RC -ne 0 || $STATE60_RC -ne 0 ]]; then
   echo "RESULT=$CASE_NAME FOREGROUND_FAIL" | tee -a "$LOGDIR/summary.txt"
   exit 30
 fi
@@ -247,6 +266,10 @@ fi
 if [[ "$SYSTEM_OVERLAY" == yes ]]; then
   echo "RESULT=$CASE_NAME SYSTEM_OVERLAY_FALSE_POSITIVE" | tee -a "$LOGDIR/summary.txt"
   exit 32
+fi
+if [[ "$SCREENSHOT_OK" != yes ]]; then
+  echo "RESULT=$CASE_NAME EMPTY_SCREENSHOT_FAIL" | tee -a "$LOGDIR/summary.txt"
+  exit 33
 fi
 
 echo "RESULT=$CASE_NAME FOREGROUND_60S_OK" | tee -a "$LOGDIR/summary.txt"
