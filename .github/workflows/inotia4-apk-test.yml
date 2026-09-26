@@ -1,0 +1,101 @@
+name: Inotia4 APK install and launch test
+
+on:
+  push:
+    branches:
+      - main
+      - inotia4-apk-ci
+    paths:
+      - '.github/workflows/inotia4-apk-test.yml'
+      - 'inotia4-ci/**'
+  workflow_dispatch:
+  schedule:
+    - cron: '17 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inotia4-apk-ci
+  cancel-in-progress: true
+
+jobs:
+  android-launch-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show test fixture metadata
+        shell: bash
+        run: |
+          set -euxo pipefail
+          base64 -d inotia4-ci/patches/memorytext_e.dat.jpg.b64 > "$RUNNER_TEMP/memorytext_e.dat.jpg"
+          sha256sum "$RUNNER_TEMP/memorytext_e.dat.jpg"
+          test "$(sha256sum "$RUNNER_TEMP/memorytext_e.dat.jpg" | awk '{print $1}')" = "75bb655c8c2cd3e89a28e8b90e1e6d1d7900f26521dc5aece8572964079cb3ee"
+
+      - name: Run original, resigned-control, and patched APK cases
+        id: emulator-test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 28
+          target: google_apis
+          arch: x86
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          script: |
+            set +e
+            mkdir -p inotia4-ci/test-results
+
+            bash inotia4-ci/run_case.sh official-original
+            OFFICIAL_RC=$?
+            echo "official-original=$OFFICIAL_RC" | tee inotia4-ci/test-results/status.txt
+
+            bash inotia4-ci/run_case.sh resigned-control
+            RESIGNED_RC=$?
+            echo "resigned-control=$RESIGNED_RC" | tee -a inotia4-ci/test-results/status.txt
+
+            bash inotia4-ci/run_case.sh patched-999
+            PATCHED_RC=$?
+            echo "patched-999=$PATCHED_RC" | tee -a inotia4-ci/test-results/status.txt
+
+            set -e
+            echo "Completed all three cases; evaluation runs after artifact upload."
+
+      - name: Upload diagnostic logs and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inotia4-apk-diagnostics-${{ github.run_number }}
+          path: inotia4-ci/test-results/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Evaluate launch results
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS=inotia4-ci/test-results/status.txt
+          if [[ ! -f "$STATUS" ]]; then
+            echo "No status file was produced; emulator/bootstrap stage failed."
+            exit 1
+          fi
+          cat "$STATUS"
+          OFFICIAL_RC="$(awk -F= '$1=="official-original"{print $2}' "$STATUS")"
+          RESIGNED_RC="$(awk -F= '$1=="resigned-control"{print $2}' "$STATUS")"
+          PATCHED_RC="$(awk -F= '$1=="patched-999"{print $2}' "$STATUS")"
+
+          echo "official-original rc=$OFFICIAL_RC"
+          echo "resigned-control rc=$RESIGNED_RC"
+          echo "patched-999 rc=$PATCHED_RC"
+
+          # A non-zero case is intentionally a CI failure so the hourly run
+          # remains visible. Logs distinguish source/emulator, signing, and
+          # resource-patch failures.
+          if [[ "$OFFICIAL_RC" != "0" || "$RESIGNED_RC" != "0" || "$PATCHED_RC" != "0" ]]; then
+            exit 1
+          fi
