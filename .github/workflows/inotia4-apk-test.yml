@@ -114,3 +114,63 @@ jobs:
 
           cat "$RESULT"
           exit 0
+
+  arm64-translation-launch-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Enable KVM acceleration
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [[ -e /dev/kvm ]]; then
+            sudo chmod 666 /dev/kvm
+          else
+            echo '/dev/kvm is not available on this runner'
+            exit 1
+          fi
+
+      - name: Verify patched resource fixture
+        shell: bash
+        run: |
+          set -euxo pipefail
+          base64 -d inotia4-ci/patches/memorytext_e.dat.jpg.b64 > "$RUNNER_TEMP/memorytext_e.dat.jpg"
+          test "$(sha256sum "$RUNNER_TEMP/memorytext_e.dat.jpg" | awk '{print $1}')" = "75bb655c8c2cd3e89a28e8b90e1e6d1d7900f26521dc5aece8572964079cb3ee"
+
+      - name: Run actual ARM64 candidates through Android 11 translation
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          disable-linux-hw-accel: false
+          emulator-boot-timeout: 300
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -no-metrics
+          script: bash inotia4-ci/run_arm64_translation_cases.sh
+
+      - name: Upload ARM64 translation diagnostics and candidate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inotia4-arm64-translation-${{ github.run_number }}
+          path: inotia4-ci/arm64-translation-results/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Record ARM64 translation result without expected-failure email
+        if: always()
+        shell: bash
+        run: |
+          RESULT=inotia4-ci/arm64-translation-results/arm64-validation.txt
+          if [[ -f "$RESULT" ]]; then
+            cat "$RESULT"
+          else
+            echo '::warning::ARM64 translation diagnostic did not reach validation.'
+          fi
+          exit 0
