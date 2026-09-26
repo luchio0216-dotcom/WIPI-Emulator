@@ -1,0 +1,30 @@
+name: Build bsdiff helper
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/build-bsdiff-tool.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install bsdiff
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bsdiff
+          cp "$(command -v bsdiff)" "$RUNNER_TEMP/bsdiff"
+          cp "$(command -v bspatch)" "$RUNNER_TEMP/bspatch"
+          chmod +x "$RUNNER_TEMP/bsdiff" "$RUNNER_TEMP/bspatch"
+      - name: Upload tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: bsdiff-linux
+          path: |
+            ${{ runner.temp }}/bsdiff
+            ${{ runner.temp }}/bspatch
+          retention-days: 1
