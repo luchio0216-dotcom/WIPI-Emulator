@@ -241,9 +241,13 @@ if [[ "$CASE_NAME" == "resigned-control" ]]; then
   adb root >/dev/null 2>&1 || true
   adb wait-for-device || true
   UID_NUM="$(adb shell dumpsys package "$PACKAGE" 2>/dev/null | sed -n 's/.*userId=\([0-9][0-9]*\).*/\1/p' | head -n1 | tr -d '\r')"
-  NATIVE_DIR="$(adb shell dumpsys package "$PACKAGE" 2>/dev/null | sed -n 's/.*nativeLibraryDir=\([^ ]*\).*/\1/p' | head -n1 | tr -d '\r')"
+  APK_PATH="$(adb shell pm path "$PACKAGE" 2>/dev/null | sed -n 's/^package://p' | head -n1 | tr -d '\r')"
+  APP_DIR="${APK_PATH%/base.apk}"
+  NATIVE_DIR="$APP_DIR/lib/x86"
   {
     echo "uid=$UID_NUM"
+    echo "apk_path=$APK_PATH"
+    echo "app_dir=$APP_DIR"
     echo "native_dir=$NATIVE_DIR"
     adb shell ls -la "$NATIVE_DIR" 2>&1 || true
   } | tee "$LOGDIR/jiagu-preseed-environment.txt"
