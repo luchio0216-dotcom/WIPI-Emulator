@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: inotia4-apk-ci-exact-source-v2
+  group: inotia4-apk-ci-exact-source-v3
   cancel-in-progress: true
 
 jobs:
@@ -45,6 +45,22 @@ jobs:
           set -euxo pipefail
           base64 -d inotia4-ci/patches/memorytext_e.dat.jpg.b64 > "$RUNNER_TEMP/memorytext_e.dat.jpg"
           test "$(sha256sum "$RUNNER_TEMP/memorytext_e.dat.jpg" | awk '{print $1}')" = "75bb655c8c2cd3e89a28e8b90e1e6d1d7900f26521dc5aece8572964079cb3ee"
+
+      - name: Prevent ActivityManager wait from stalling validation
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('inotia4-ci/run_case.sh')
+          s = p.read_text()
+          old = 'adb shell am start -W -n "$RESOLVED_ACTIVITY" 2>&1 | tee "$LOGDIR/am-start.txt"'
+          new = '( timeout 10s adb shell am start -n "$RESOLVED_ACTIVITY" || [[ $? -eq 124 ]] ) 2>&1 | tee "$LOGDIR/am-start.txt"'
+          if old not in s:
+              raise SystemExit('expected am start command not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          grep -n 'am start' inotia4-ci/run_case.sh
 
       - name: Run exact-source control and patched runtime diagnostics
         id: emulator-test
