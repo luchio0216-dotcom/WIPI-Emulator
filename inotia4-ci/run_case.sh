@@ -11,7 +11,6 @@ SIGNED="$WORK/signed"
 LOGDIR="$ROOT_DIR/inotia4-ci/test-results/$CASE_NAME"
 TARGET_ENTRY="assets/common/game_res/memorytext_e.dat.jpg"
 PACKAGE="com.com2us.inotia4.normal.freefull.google.global.android.common"
-ACTIVITY="com.com2us.inotia4.normal.freefull.google.global.android.common.SplashActivity"
 XAPK_URL="https://d.apkpure.net/b/XAPK/com.com2us.inotia4.normal.freefull.google.global.android.common?versionCode=139004"
 USER_ORIGINAL_RESOURCE_SHA256="4e674cc35edf276e466c66b8c7562586f9d7c5e46bbb712a90bc8945c0705a22"
 USER_PATCHED_RESOURCE_SHA256="75bb655c8c2cd3e89a28e8b90e1e6d1d7900f26521dc5aece8572964079cb3ee"
@@ -33,8 +32,6 @@ if [[ ${#ALL_APKS[@]} -eq 0 ]]; then
   exit 10
 fi
 
-# APKPure's current 1.3.9 bundle stores native code and resources in splits.
-# The base package is the only APK whose filename is not config.*.apk.
 BASE_APK=""
 for apk in "${ALL_APKS[@]}"; do
   name="$(basename "$apk")"
@@ -48,31 +45,12 @@ if [[ -z "$BASE_APK" ]]; then
   BASE_APK="$(find "$SRC" -type f -name '*.apk' -printf '%s %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
 fi
 
-X86_SPLIT_FOUND=0
-for apk in "${ALL_APKS[@]}"; do
-  if unzip -Z1 "$apk" | grep -q '^lib/x86/'; then
-    X86_SPLIT_FOUND=1
-    break
-  fi
-done
-if [[ $X86_SPLIT_FOUND -ne 1 ]]; then
-  echo "No x86 native split found; this workflow uses an x86 emulator." >&2
-  exit 12
-fi
-
-{
-  echo "Base APK: $BASE_APK"
-  echo "All APKs:"
-  printf '  %s\n' "${ALL_APKS[@]}"
-  echo "Base game_res candidates:"
-  unzip -Z1 "$BASE_APK" | grep 'assets/common/game_res/' | head -n 80 || true
-} | tee "$LOGDIR/source-layout.txt"
-
-# Keep base + resource/language/density splits + x86 ABI. Exclude other ABI
-# splits so install-multiple resolves a consistent x86 package set.
+# Keep only the base, resource/language/density splits and x86/x86_64 native
+# split for the CI emulator. The Android 15 emulator can use ABI translation
+# when an ARM-only fixture is used in later iterations.
 for apk in "${ALL_APKS[@]}"; do
   listing="$(unzip -Z1 "$apk")"
-  if grep -Eq '^lib/(arm64-v8a|armeabi-v7a|x86_64)/' <<<"$listing"; then
+  if grep -Eq '^lib/(arm64-v8a|armeabi-v7a)/' <<<"$listing"; then
     continue
   fi
   cp "$apk" "$SELECTED/$(basename "$apk")"
@@ -95,39 +73,32 @@ for apk in "$SELECTED"/*.apk; do
     break
   fi
 done
+
 {
+  echo "base_apk=$BASE_APK"
   echo "target_entry_present=$TARGET_PRESENT"
   echo "target_owner=$TARGET_OWNER"
   echo "source_resource_sha256=$SOURCE_RESOURCE_SHA256"
   echo "user_original_resource_sha256=$USER_ORIGINAL_RESOURCE_SHA256"
   echo "user_patched_resource_sha256=$USER_PATCHED_RESOURCE_SHA256"
-  if [[ "$SOURCE_RESOURCE_SHA256" == "$USER_ORIGINAL_RESOURCE_SHA256" ]]; then
-    echo "resource_fixture_match=yes"
-  else
-    echo "resource_fixture_match=no"
-  fi
+  [[ "$SOURCE_RESOURCE_SHA256" == "$USER_ORIGINAL_RESOURCE_SHA256" ]] && echo "resource_fixture_match=yes" || echo "resource_fixture_match=no"
 } | tee "$LOGDIR/resource-hashes.txt"
+
+# Never claim a gameplay patch passed when the public fixture does not contain
+# the exact same source data as the APK supplied by the user.
+if [[ "$CASE_NAME" == "patched-999" && "$SOURCE_RESOURCE_SHA256" != "$USER_ORIGINAL_RESOURCE_SHA256" ]]; then
+  echo "RESULT=$CASE_NAME FIXTURE_MISMATCH" | tee "$LOGDIR/summary.txt"
+  exit 15
+fi
 
 if [[ "$CASE_NAME" == "patched-999" ]]; then
   base64 -d "$CI_DIR/patches/memorytext_e.dat.jpg.b64" > "$WORK/patched-memorytext_e.dat.jpg"
   PATCH_SHA="$(sha256sum "$WORK/patched-memorytext_e.dat.jpg" | awk '{print $1}')"
-  if [[ "$PATCH_SHA" != "$USER_PATCHED_RESOURCE_SHA256" ]]; then
-    echo "Patch fixture SHA256 mismatch: $PATCH_SHA" >&2
-    exit 13
-  fi
+  [[ "$PATCH_SHA" == "$USER_PATCHED_RESOURCE_SHA256" ]] || exit 13
 
-  # If the public bundle has the same game-data member, replace it in place.
-  # If not, inject the member only as a structural/signing stress test. The
-  # latter does NOT claim to reproduce gameplay behavior of the user's APK.
-  PATCH_OWNER="$SELECTED/$BASE_NAME"
-  if [[ "$TARGET_PRESENT" == yes ]]; then
-    PATCH_OWNER="$SELECTED/$(basename "$TARGET_OWNER")"
-    cp "$PATCH_OWNER" "$WORK/patched-owner.apk"
-    zip -q -d "$WORK/patched-owner.apk" "$TARGET_ENTRY"
-  else
-    cp "$PATCH_OWNER" "$WORK/patched-owner.apk"
-    echo "diagnostic_only_injected_target=yes" >> "$LOGDIR/resource-hashes.txt"
-  fi
+  PATCH_OWNER="$SELECTED/$(basename "$TARGET_OWNER")"
+  cp "$PATCH_OWNER" "$WORK/patched-owner.apk"
+  zip -q -d "$WORK/patched-owner.apk" "$TARGET_ENTRY"
   mkdir -p "$WORK/inject/assets/common/game_res"
   cp "$WORK/patched-memorytext_e.dat.jpg" "$WORK/inject/$TARGET_ENTRY"
   (
@@ -135,21 +106,17 @@ if [[ "$CASE_NAME" == "patched-999" ]]; then
     zip -q -0 "$WORK/patched-owner.apk" "$TARGET_ENTRY"
   )
   cp "$WORK/patched-owner.apk" "$PATCH_OWNER"
-  unzip -p "$PATCH_OWNER" "$TARGET_ENTRY" | sha256sum | tee -a "$LOGDIR/resource-hashes.txt"
+  ACTUAL_PATCH_SHA="$(unzip -p "$PATCH_OWNER" "$TARGET_ENTRY" | sha256sum | awk '{print $1}')"
+  echo "installed_patch_sha256=$ACTUAL_PATCH_SHA" >> "$LOGDIR/resource-hashes.txt"
+  [[ "$ACTUAL_PATCH_SHA" == "$USER_PATCHED_RESOURCE_SHA256" ]] || exit 16
 fi
 
-APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
-ZIPALIGN="$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -n 1)"
-if [[ -z "$APKSIGNER" ]]; then
-  echo "apksigner not found under $ANDROID_HOME/build-tools" >&2
-  exit 14
-fi
+APKSIGNER="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n1)"
+ZIPALIGN="$(find "$ANDROID_HOME/build-tools" -type f -name zipalign | sort -V | tail -n1)"
+[[ -n "$APKSIGNER" && -n "$ZIPALIGN" ]] || exit 14
 
 if [[ "$CASE_NAME" == "official-original" ]]; then
   cp "$SELECTED"/*.apk "$SIGNED/"
-  for apk in "$SIGNED"/*.apk; do
-    "$APKSIGNER" verify --verbose --print-certs "$apk" >> "$LOGDIR/signature-verification.txt" 2>&1 || true
-  done
 else
   KEYSTORE="$WORK/test-signing.jks"
   keytool -genkeypair -noprompt -keystore "$KEYSTORE" -storepass android -keypass android \
@@ -157,13 +124,15 @@ else
     -dname 'CN=Inotia4 CI,OU=Testing,O=Local,L=Seoul,ST=Seoul,C=KR'
 
   for apk in "$SELECTED"/*.apk; do
-    out="$SIGNED/$(basename "$apk")"
+    name="$(basename "$apk")"
+    aligned="$WORK/aligned-$name"
+    "$ZIPALIGN" -P 16 -f 4 "$apk" "$aligned"
     "$APKSIGNER" sign \
       --ks "$KEYSTORE" --ks-key-alias inotia4-ci \
       --ks-pass pass:android --key-pass pass:android \
       --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
-      --out "$out" "$apk"
-    "$APKSIGNER" verify --verbose --print-certs "$out" >> "$LOGDIR/signature-verification.txt" 2>&1
+      --out "$SIGNED/$name" "$aligned"
+    "$APKSIGNER" verify --verbose --print-certs "$SIGNED/$name" >> "$LOGDIR/signature-verification.txt" 2>&1
   done
 fi
 
@@ -174,7 +143,6 @@ done
 
 adb wait-for-device
 adb logcat -c || true
-adb shell pm clear "$PACKAGE" >/dev/null 2>&1 || true
 adb uninstall "$PACKAGE" >/dev/null 2>&1 || true
 
 mapfile -t INSTALL_APKS < <(find "$SIGNED" -maxdepth 1 -type f -name '*.apk' | sort)
@@ -190,11 +158,6 @@ if [[ $INSTALL_RC -ne 0 ]]; then
   exit 20
 fi
 
-while IFS= read -r -d '' obb; do
-  adb shell mkdir -p "/sdcard/Android/obb/$PACKAGE"
-  adb push "$obb" "/sdcard/Android/obb/$PACKAGE/$(basename "$obb")" || true
-done < <(find "$SRC" -type f -name '*.obb' -print0)
-
 adb shell settings put global window_animation_scale 0 || true
 adb shell settings put global transition_animation_scale 0 || true
 adb shell settings put global animator_duration_scale 0 || true
@@ -202,38 +165,88 @@ adb logcat -c || true
 
 RESOLVED_ACTIVITY="$(adb shell cmd package resolve-activity --brief "$PACKAGE" 2>/dev/null | tr -d '\r' | tail -n1 || true)"
 echo "resolved_activity=$RESOLVED_ACTIVITY" | tee "$LOGDIR/activity.txt"
-set +e
-adb shell am start -W -n "$PACKAGE/$ACTIVITY" 2>&1 | tee "$LOGDIR/am-start.txt"
-START_RC=${PIPESTATUS[0]}
-if [[ $START_RC -ne 0 ]]; then
-  adb shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER 1 2>&1 | tee -a "$LOGDIR/am-start.txt"
-  START_RC=${PIPESTATUS[0]}
+if [[ -z "$RESOLVED_ACTIVITY" || "$RESOLVED_ACTIVITY" != "$PACKAGE"* ]]; then
+  echo "RESULT=$CASE_NAME NO_LAUNCHER_ACTIVITY" | tee "$LOGDIR/summary.txt"
+  exit 21
 fi
+
+set +e
+adb shell am start -W -n "$RESOLVED_ACTIVITY" 2>&1 | tee "$LOGDIR/am-start.txt"
+START_RC=${PIPESTATUS[0]}
 set -e
+if [[ $START_RC -ne 0 ]]; then
+  echo "RESULT=$CASE_NAME START_FAIL rc=$START_RC" | tee "$LOGDIR/summary.txt"
+  exit 22
+fi
+
+# Android may show its own one-time immersive/full-screen education overlay.
+# Attempt to dismiss it so that foreground checks measure the game itself.
+sleep 2
+adb shell input keyevent 66 >/dev/null 2>&1 || true
+adb shell input tap 900 1750 >/dev/null 2>&1 || true
+
+sample_state() {
+  local tag="$1"
+  local pid resumed focus
+  pid="$(adb shell pidof "$PACKAGE" 2>/dev/null | tr -d '\r' || true)"
+  resumed="$(adb shell dumpsys activity activities 2>/dev/null | grep -m1 -E 'mResumedActivity|topResumedActivity' || true)"
+  focus="$(adb shell dumpsys window windows 2>/dev/null | grep -m1 -E 'mCurrentFocus|mFocusedApp' || true)"
+  printf 'pid_%s=%s\nresumed_%s=%s\nfocus_%s=%s\n' "$tag" "$pid" "$tag" "$resumed" "$tag" "$focus" | tee "$LOGDIR/state-$tag.txt"
+  adb shell dumpsys activity activities > "$LOGDIR/dumpsys-$tag.txt" || true
+  adb exec-out screencap -p > "$LOGDIR/screenshot-$tag.png" || true
+  adb shell uiautomator dump /sdcard/window.xml >/dev/null 2>&1 || true
+  adb pull /sdcard/window.xml "$LOGDIR/window-$tag.xml" >/dev/null 2>&1 || true
+  if [[ -z "$pid" ]]; then return 1; fi
+  if [[ "$resumed" != *"$PACKAGE"* && "$focus" != *"$PACKAGE"* ]]; then return 2; fi
+  return 0
+}
 
 sleep 8
-PID8="$(adb shell pidof "$PACKAGE" 2>/dev/null | tr -d '\r' || true)"
-adb shell dumpsys activity activities > "$LOGDIR/dumpsys-8s.txt" || true
-adb exec-out screencap -p > "$LOGDIR/screenshot-8s.png" || true
-sleep 22
-PID30="$(adb shell pidof "$PACKAGE" 2>/dev/null | tr -d '\r' || true)"
-adb shell dumpsys activity activities > "$LOGDIR/dumpsys-30s.txt" || true
-adb exec-out screencap -p > "$LOGDIR/screenshot-30s.png" || true
+sample_state 10s || STATE10_RC=$?
+STATE10_RC=${STATE10_RC:-0}
+sleep 20
+sample_state 30s || STATE30_RC=$?
+STATE30_RC=${STATE30_RC:-0}
+sleep 30
+sample_state 60s || STATE60_RC=$?
+STATE60_RC=${STATE60_RC:-0}
+
 adb logcat -d -v threadtime > "$LOGDIR/logcat.txt" || true
+FATAL_LINES="$(grep -E 'FATAL EXCEPTION|Fatal signal|SIGSEGV|SIGABRT|ANR in|has died' "$LOGDIR/logcat.txt" | grep -Ei 'inotia4|com2us|StubApp|Hercules' || true)"
+SYSTEM_OVERLAY=no
+if [[ -f "$LOGDIR/window-60s.xml" ]] && grep -Eqi 'Viewing full screen|GOT IT|full.?screen education|immersive' "$LOGDIR/window-60s.xml"; then
+  SYSTEM_OVERLAY=yes
+fi
 
 {
   echo "case=$CASE_NAME"
   echo "start_rc=$START_RC"
-  echo "pid_8s=$PID8"
-  echo "pid_30s=$PID30"
-  echo "target_entry_present_in_public_source=$TARGET_PRESENT"
+  echo "state10_rc=$STATE10_RC"
+  echo "state30_rc=$STATE30_RC"
+  echo "state60_rc=$STATE60_RC"
+  echo "system_overlay_60s=$SYSTEM_OVERLAY"
   echo "source_resource_sha256=$SOURCE_RESOURCE_SHA256"
-  grep -E 'FATAL EXCEPTION|Fatal signal|AndroidRuntime|SIG(SEGV|ABRT)|SecurityException|PackageManager|StubApp|Hercules|jiagu|native bridge|UnsatisfiedLinkError' "$LOGDIR/logcat.txt" | tail -n 300 || true
+  echo "fatal_lines_begin"
+  printf '%s\n' "$FATAL_LINES"
+  echo "fatal_lines_end"
 } | tee "$LOGDIR/summary.txt"
 
-if [[ -z "$PID8" || -z "$PID30" ]]; then
-  echo "RESULT=$CASE_NAME LAUNCH_FAIL" | tee -a "$LOGDIR/summary.txt"
+if [[ $STATE10_RC -ne 0 || $STATE30_RC -ne 0 || $STATE60_RC -ne 0 ]]; then
+  echo "RESULT=$CASE_NAME FOREGROUND_FAIL" | tee -a "$LOGDIR/summary.txt"
   exit 30
 fi
+if [[ -n "$FATAL_LINES" ]]; then
+  echo "RESULT=$CASE_NAME CRASH_LOG_FOUND" | tee -a "$LOGDIR/summary.txt"
+  exit 31
+fi
+if [[ "$SYSTEM_OVERLAY" == yes ]]; then
+  echo "RESULT=$CASE_NAME SYSTEM_OVERLAY_FALSE_POSITIVE" | tee -a "$LOGDIR/summary.txt"
+  exit 32
+fi
 
-echo "RESULT=$CASE_NAME LAUNCH_OK pid=$PID30" | tee -a "$LOGDIR/summary.txt"
+if [[ "$CASE_NAME" == "patched-999" ]]; then
+  mkdir -p "$LOGDIR/tested-apks"
+  cp "$SIGNED"/*.apk "$LOGDIR/tested-apks/"
+fi
+
+echo "RESULT=$CASE_NAME FOREGROUND_60S_OK" | tee -a "$LOGDIR/summary.txt"
