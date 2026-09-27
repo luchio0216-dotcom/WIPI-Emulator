@@ -20,29 +20,28 @@ concurrency:
 
 jobs:
   native-arm64-launch-test:
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+    runs-on: macos-14
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Show native runner architecture
+      - name: Show native runner architecture and install GNU tools
         shell: bash
         run: |
           set -euxo pipefail
           uname -a
           uname -m
-          test "$(uname -m)" = "aarch64"
-          if [[ -e /dev/kvm ]]; then
-            sudo chmod 666 /dev/kvm
-            ls -l /dev/kvm
-          fi
+          test "$(uname -m)" = "arm64"
+          brew install coreutils
+          echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
 
       - name: Verify patched resource fixture
         shell: bash
         run: |
           set -euxo pipefail
+          export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"
           base64 -d inotia4-ci/patches/memorytext_e.dat.jpg.b64 > "$RUNNER_TEMP/memorytext_e.dat.jpg"
           test "$(sha256sum "$RUNNER_TEMP/memorytext_e.dat.jpg" | awk '{print $1}')" = "75bb655c8c2cd3e89a28e8b90e1e6d1d7900f26521dc5aece8572964079cb3ee"
 
@@ -54,9 +53,8 @@ jobs:
           arch: arm64-v8a
           profile: pixel_2
           disable-animations: true
-          disable-linux-hw-accel: false
-          emulator-boot-timeout: 300
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none -no-metrics
+          emulator-boot-timeout: 600
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none -no-metrics -accel off
           script: bash inotia4-ci/run_arm64_translation_cases.sh
 
       - name: Upload native ARM64 diagnostics and candidate
