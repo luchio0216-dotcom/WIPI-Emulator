@@ -1,0 +1,121 @@
+name: Inotia virtual device integration test
+
+on:
+  push:
+    branches:
+      - feature/p-data-import
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inotia-emulator-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Prepare working WIPI-root-modified Inotia package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/inotia android/app/src/androidTest/assets
+          curl -fsSL -A 'Mozilla/5.0' 'https://dubigame.tistory.com/135' -o /tmp/inotia/page.html
+          python3 - <<'PY'
+          import html, re, subprocess, pathlib, zipfile, hashlib
+          page = pathlib.Path('/tmp/inotia/page.html').read_text(errors='ignore')
+          candidates = re.findall(r'href=["\']([^"\']+)["\']', page, flags=re.I)
+          urls = []
+          for raw in candidates:
+              u = html.unescape(raw)
+              if 'blog.kakaocdn.net' in u and ('.zip' in u.lower() or 'tfile.zip' in u.lower()):
+                  urls.append(u)
+          if not urls:
+              for m in re.findall(r'https?://[^"\'<> ]*blog\.kakaocdn\.net[^"\'<> ]+', page, flags=re.I):
+                  u = html.unescape(m.replace('\\u0026', '&').replace('\\/', '/'))
+                  if '.zip' in u.lower() or 'tfile.zip' in u.lower():
+                      urls.append(u)
+          if not urls:
+              raise SystemExit('Could not locate the public Inotia ZIP attachment URL')
+          url = urls[0]
+          subprocess.run(['curl','-fL','--retry','3','-A','Mozilla/5.0','-e','https://dubigame.tistory.com/135',url,'-o','/tmp/inotia/original.zip'], check=True)
+          src = zipfile.ZipFile('/tmp/inotia/original.zip')
+          names = [n.replace('\\','/') for n in src.namelist()]
+          adf = next((n for n in names if n == '__adf__' or n.endswith('/__adf__')), None)
+          if adf is None:
+              raise SystemExit('Downloaded file is not the expected WIPI archive (__adf__ missing)')
+          prefix = adf[:-len('__adf__')]
+          out_path = pathlib.Path('android/app/src/androidTest/assets/inotia1_flat.zip')
+          with zipfile.ZipFile(out_path, 'w', zipfile.ZIP_DEFLATED) as out:
+              for info in src.infolist():
+                  n = info.filename.replace('\\','/')
+                  if info.is_dir() or not n.startswith(prefix): continue
+                  rel = n[len(prefix):]
+                  if rel: out.writestr(rel, src.read(info))
+          print('working WIPI root:', out_path, out_path.stat().st_size, hashlib.sha256(out_path.read_bytes()).hexdigest())
+          PY
+
+      - name: Install Android NDK and Rust x86_64 target
+        shell: bash
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.1.12297006"
+          rustup target add x86_64-linux-android
+
+      - name: Build x86_64 Rust JNI library with Inotia KTF compatibility shim
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$ANDROID_HOME/ndk/27.1.12297006/toolchains/llvm/prebuilt/linux-x86_64"
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$TOOLCHAIN/bin/x86_64-linux-android26-clang"
+          export CC_x86_64_linux_android="$TOOLCHAIN/bin/x86_64-linux-android26-clang"
+          export AR_x86_64_linux_android="$TOOLCHAIN/bin/llvm-ar"
+          export CFLAGS_x86_64_linux_android="-D__ANDROID_API__=26"
+          cd rust; cargo fetch; cd ..
+          python3 scripts/patch-inotia-min.py
+          python3 scripts/patch-inotia-storage-probe.py
+          python3 scripts/patch-inotia-save-overwrite.py
+          cd rust; cargo build -p wipi_android --release --target x86_64-linux-android; cd ..
+          mkdir -p android/app/src/main/jniLibs/x86_64
+          cp rust/target/x86_64-linux-android/release/libwipi_android.so android/app/src/main/jniLibs/x86_64/
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+
+      - name: Run real game in Android virtual device and collect evidence
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect
+          script: set -e; gradle -p android :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace; APP_APK=$(find android/app/build/outputs/apk/debug -name '*.apk' | head -n1); TEST_APK=$(find android/app/build/outputs/apk/androidTest/debug -name '*.apk' | head -n1); adb install -r "$APP_APK"; adb install -r "$TEST_APK"; set +e; adb shell am instrument -w -r -e class com.parkjeongseop.wipi.InotiaPDataIntegrationTest com.parkjeongseop.wipi.pdata4.test/androidx.test.runner.AndroidJUnitRunner > /tmp/inotia-instrumentation.txt 2>&1; TEST_RC=$?; if grep -qE 'FAILURES!!!|No emulator frame was produced' /tmp/inotia-instrumentation.txt; then TEST_RC=1; elif grep -qE 'OK \([0-9]+ tests?\)' /tmp/inotia-instrumentation.txt; then TEST_RC=0; fi; cat /tmp/inotia-instrumentation.txt; set -e; mkdir -p inotia-virtual-result; PKG='com.parkjeongseop.wipi.pdata4'; for f in inotia-before.png inotia-after-restart.png inotia-after-ok.png inotia-character.png inotia-stage2.txt inotia-report.txt inotia-wfs-report.txt; do adb exec-out run-as "$PKG" cat "cache/$f" > "inotia-virtual-result/$f" 2>/dev/null || true; done; cp /tmp/inotia-instrumentation.txt inotia-virtual-result/instrumentation.txt || true; adb logcat -d > inotia-virtual-result/logcat.txt 2>/dev/null || true; ls -lh inotia-virtual-result || true; exit "$TEST_RC"
+
+      - name: Upload virtual-device evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inotia-virtual-result
+          path: inotia-virtual-result/
+          if-no-files-found: warn
+          retention-days: 14

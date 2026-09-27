@@ -1,0 +1,2 @@
+Trigger Inotia cash-shop probe after local MC_netSocketConnect implementation.
+No external cash-shop network access is permitted.
