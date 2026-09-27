@@ -1,0 +1,86 @@
+name: Inotia4 native ARM64 launch test
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/inotia4-native-arm64-test.yml'
+      - 'inotia4-ci/run_arm64_translation_case.sh'
+      - 'inotia4-ci/run_arm64_translation_cases.sh'
+      - 'inotia4-ci/patches/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: inotia4-native-arm64-ci
+  cancel-in-progress: true
+
+jobs:
+  native-arm64-launch-test:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show native runner architecture
+        shell: bash
+        run: |
+          set -euxo pipefail
+          uname -a
+          uname -m
+          test "$(uname -m)" = "aarch64"
+          if [[ -e /dev/kvm ]]; then
+            sudo chmod 666 /dev/kvm
+            ls -l /dev/kvm
+          fi
+
+      - name: Verify patched resource fixture
+        shell: bash
+        run: |
+          set -euxo pipefail
+          base64 -d inotia4-ci/patches/memorytext_e.dat.jpg.b64 > "$RUNNER_TEMP/memorytext_e.dat.jpg"
+          test "$(sha256sum "$RUNNER_TEMP/memorytext_e.dat.jpg" | awk '{print $1}')" = "75bb655c8c2cd3e89a28e8b90e1e6d1d7900f26521dc5aece8572964079cb3ee"
+
+      - name: Run exact original, re-signed control, and patched APK on native ARM64 Android
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: arm64-v8a
+          profile: pixel_2
+          disable-animations: true
+          disable-linux-hw-accel: false
+          emulator-boot-timeout: 300
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none -no-metrics
+          script: bash inotia4-ci/run_arm64_translation_cases.sh
+
+      - name: Upload native ARM64 diagnostics and candidate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inotia4-native-arm64-${{ github.run_number }}
+          path: inotia4-ci/arm64-translation-results/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Report native ARM64 validation
+        if: always()
+        shell: bash
+        run: |
+          RESULT=inotia4-ci/arm64-translation-results/arm64-validation.txt
+          if [[ -f "$RESULT" ]]; then
+            cat "$RESULT"
+            if grep -q '^VALIDATION=PASS$' "$RESULT"; then
+              echo 'Native ARM64 validation passed.'
+            else
+              echo '::warning::Native ARM64 validation is not ready.'
+            fi
+          else
+            echo '::warning::Native ARM64 diagnostic did not reach validation.'
+          fi
+          exit 0
