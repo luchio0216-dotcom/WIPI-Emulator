@@ -10,8 +10,6 @@ on:
       - 'inotia4-ci/run_arm64_translation_cases.sh'
       - 'inotia4-ci/patches/**'
   workflow_dispatch:
-  schedule:
-    - cron: '23 * * * *'
 
 permissions:
   contents: read
