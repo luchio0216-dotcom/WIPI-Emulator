@@ -32,7 +32,7 @@ jobs:
           go-version: '1.25.x'
           cache-dependency-path: wfeature-src/go.sum
 
-      - name: Raise diagnostic speed ceiling
+      - name: Build analysis-speed KTF runtime
         shell: bash
         run: |
           set -euxo pipefail
@@ -40,28 +40,28 @@ jobs:
           from pathlib import Path
           p = Path('wfeature-src/internal/backend/speed.go')
           s = p.read_text()
-          old = 'SpeedCeiling = 16.0'
-          new = 'SpeedCeiling = 256.0'
+          s = s.replace('SpeedCeiling = 16.0', 'SpeedCeiling = 256.0', 1)
+          p.write_text(s)
+
+          p = Path('wfeature-src/internal/platform/ktf/service_budget.go')
+          s = p.read_text()
+          old = 'const batchGuestStepsPerMillisecond = 100_000'
+          new = 'const batchGuestStepsPerMillisecond = 1_000'
           if old not in s:
-              raise SystemExit('speed ceiling marker not found')
+              raise SystemExit('batch clock marker not found')
           p.write_text(s.replace(old, new, 1))
           PY
           grep -n 'SpeedCeiling' wfeature-src/internal/backend/speed.go
-
-      - name: Build Linux amd64 CLI
-        shell: bash
-        run: |
-          set -euxo pipefail
+          grep -n 'batchGuestStepsPerMillisecond' wfeature-src/internal/platform/ktf/service_budget.go
           cd wfeature-src
           make release
-          install -Dm755 build/release/wfeature ../out/wfeature-fast
-          ../out/wfeature-fast -version || true
-          sha256sum ../out/wfeature-fast | tee ../out/SHA256SUMS
+          install -Dm755 build/release/wfeature ../out/wfeature-lab
+          sha256sum ../out/wfeature-lab | tee ../out/SHA256SUMS
 
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wfeature-linux-amd64-v0.5.0-fast256
+          name: wfeature-inotia2-lab
           path: out/
           if-no-files-found: error
           retention-days: 7
