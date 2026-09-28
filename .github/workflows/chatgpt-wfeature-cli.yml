@@ -32,20 +32,36 @@ jobs:
           go-version: '1.25.x'
           cache-dependency-path: wfeature-src/go.sum
 
+      - name: Raise diagnostic speed ceiling
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('wfeature-src/internal/backend/speed.go')
+          s = p.read_text()
+          old = 'SpeedCeiling = 16.0'
+          new = 'SpeedCeiling = 256.0'
+          if old not in s:
+              raise SystemExit('speed ceiling marker not found')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          grep -n 'SpeedCeiling' wfeature-src/internal/backend/speed.go
+
       - name: Build Linux amd64 CLI
         shell: bash
         run: |
           set -euxo pipefail
           cd wfeature-src
           make release
-          install -Dm755 build/release/wfeature ../out/wfeature
-          ../out/wfeature -version || true
-          sha256sum ../out/wfeature | tee ../out/SHA256SUMS
+          install -Dm755 build/release/wfeature ../out/wfeature-fast
+          ../out/wfeature-fast -version || true
+          sha256sum ../out/wfeature-fast | tee ../out/SHA256SUMS
 
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wfeature-linux-amd64-v0.5.0
+          name: wfeature-linux-amd64-v0.5.0-fast256
           path: out/
           if-no-files-found: error
           retention-days: 7
