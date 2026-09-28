@@ -32,36 +32,41 @@ jobs:
           go-version: '1.25.x'
           cache-dependency-path: wfeature-src/go.sum
 
-      - name: Build analysis-speed KTF runtime
+      - name: Instrument KTF Host service windows
         shell: bash
         run: |
           set -euxo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          p = Path('wfeature-src/internal/backend/speed.go')
+
+          p = Path('wfeature-src/internal/platform/ktf/session.go')
           s = p.read_text()
-          s = s.replace('SpeedCeiling = 16.0', 'SpeedCeiling = 256.0', 1)
-          p.write_text(s)
+          old = 'sessionDefaultMaxSteps   = 100_000_000'
+          new = 'sessionDefaultMaxSteps   = 10_000_000'
+          if old not in s:
+              raise SystemExit('session step marker not found')
+          p.write_text(s.replace(old, new, 1))
 
           p = Path('wfeature-src/internal/platform/ktf/service_budget.go')
           s = p.read_text()
-          old = 'const batchGuestStepsPerMillisecond = 100_000'
-          new = 'const batchGuestStepsPerMillisecond = 1_000'
-          if old not in s:
-              raise SystemExit('batch clock marker not found')
-          p.write_text(s.replace(old, new, 1))
+          s = s.replace('"fmt"\n\t"time"', '"fmt"\n\t"os"\n\t"time"', 1)
+          needle = '\tnow := client.now()\n'
+          insert = '''\tnow := client.now()\n\tif client.thread != nil {\n\t\tctx := client.thread.Context()\n\t\tfmt.Fprintf(os.Stderr, "WFEATURE_SERVICE_WINDOW steps=%d remaining=%d pc=%#08x lr=%#08x clock_reads=%d\\n", client.core.Steps(), client.serviceRemaining, ctx.Registers[15], ctx.Registers[14], client.guestClockReads)\n\t}\n'''
+          if needle not in s:
+              raise SystemExit('continueHostService marker not found')
+          p.write_text(s.replace(needle, insert, 1))
           PY
-          grep -n 'SpeedCeiling' wfeature-src/internal/backend/speed.go
-          grep -n 'batchGuestStepsPerMillisecond' wfeature-src/internal/platform/ktf/service_budget.go
+          grep -n 'sessionDefaultMaxSteps' wfeature-src/internal/platform/ktf/session.go | head
+          grep -n 'WFEATURE_SERVICE_WINDOW' wfeature-src/internal/platform/ktf/service_budget.go
           cd wfeature-src
           make release
-          install -Dm755 build/release/wfeature ../out/wfeature-lab
-          sha256sum ../out/wfeature-lab | tee ../out/SHA256SUMS
+          install -Dm755 build/release/wfeature ../out/wfeature-probe
+          sha256sum ../out/wfeature-probe | tee ../out/SHA256SUMS
 
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wfeature-inotia2-lab
+          name: wfeature-inotia2-probe
           path: out/
           if-no-files-found: error
           retention-days: 7
