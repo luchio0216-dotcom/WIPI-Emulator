@@ -32,41 +32,66 @@ jobs:
           go-version: '1.25.x'
           cache-dependency-path: wfeature-src/go.sum
 
-      - name: Instrument KTF Host service windows
+      - name: Add cheat-through-serve analysis command
         shell: bash
         run: |
           set -euxo pipefail
           python3 - <<'PY'
           from pathlib import Path
 
-          p = Path('wfeature-src/internal/platform/ktf/session.go')
+          p = Path('wfeature-src/internal/serve/serve.go')
           s = p.read_text()
-          old = 'sessionDefaultMaxSteps   = 100_000_000'
-          new = 'sessionDefaultMaxSteps   = 10_000_000'
+          old = '\tPath string `json:"path,omitempty"`\n'
+          new = old + '\t// Line is one text cheat-console command for the analysis-only serve bridge.\n\tLine string `json:"line,omitempty"`\n'
           if old not in s:
-              raise SystemExit('session step marker not found')
-          p.write_text(s.replace(old, new, 1))
+              raise SystemExit('Request path marker not found')
+          s = s.replace(old, new, 1)
 
-          p = Path('wfeature-src/internal/platform/ktf/service_budget.go')
+          old = '\tPath   string        `json:"path,omitempty"`\n'
+          new = old + '\tText   string        `json:"text,omitempty"`\n'
+          if old not in s:
+              raise SystemExit('Response path marker not found')
+          s = s.replace(old, new, 1)
+
+          old = '\tDefaultHold int\n'
+          new = old + '\t// Cheat executes one command on the same cheat console used by -cheat.\n\tCheat func(line string) string\n'
+          if old not in s:
+              raise SystemExit('Driver hold marker not found')
+          s = s.replace(old, new, 1)
+
+          old = '\tcase "route":\n\t\treturn state.route(ctx, request)\n'
+          new = old + '''\tcase "cheat":\n\t\tif state.driver.Cheat == nil {\n\t\t\treturn failure("cheat is not available on this platform")\n\t\t}\n\t\tline := strings.TrimSpace(request.Line)\n\t\tif line == "" {\n\t\t\treturn failure("cheat needs a non-empty `line`")\n\t\t}\n\t\treturn Response{OK: true, Text: state.driver.Cheat(line)}\n'''
+          if old not in s:
+              raise SystemExit('route switch marker not found')
+          s = s.replace(old, new, 1)
+          s = s.replace('step, key, touch, park, screen, pixel, diag, shot, route and quit', 'step, key, touch, park, screen, pixel, diag, shot, route, cheat and quit', 1)
+          p.write_text(s)
+
+          p = Path('wfeature-src/cmd/cli/main.go')
           s = p.read_text()
-          s = s.replace('"fmt"\n\t"time"', '"fmt"\n\t"os"\n\t"time"', 1)
-          needle = '\tnow := client.now()\n'
-          insert = '''\tnow := client.now()\n\tif client.thread != nil {\n\t\tctx := client.thread.Context()\n\t\tfmt.Fprintf(os.Stderr, "WFEATURE_SERVICE_WINDOW steps=%d remaining=%d pc=%#08x lr=%#08x clock_reads=%d\\n", client.core.Steps(), client.serviceRemaining, ctx.Registers[15], ctx.Registers[14], client.guestClockReads)\n\t}\n'''
-          if needle not in s:
-              raise SystemExit('continueHostService marker not found')
-          p.write_text(s.replace(needle, insert, 1))
+          old = '\tif serveSession {\n\t\tdriver := &serve.Driver{\n'
+          new = '\tif serveSession {\n\t\tkeyCheatTable(session.CheatConsole(), path)\n\t\tdriver := &serve.Driver{\n'
+          if old not in s:
+              raise SystemExit('serve driver marker not found')
+          s = s.replace(old, new, 1)
+          old = '\t\t\tDefaultHold: keyHold,\n\t\t}\n'
+          new = '\t\t\tDefaultHold: keyHold,\n\t\t\tCheat:       session.CheatConsole().Execute,\n\t\t}\n'
+          if old not in s:
+              raise SystemExit('DefaultHold marker not found')
+          s = s.replace(old, new, 1)
+          p.write_text(s)
           PY
-          grep -n 'sessionDefaultMaxSteps' wfeature-src/internal/platform/ktf/session.go | head
-          grep -n 'WFEATURE_SERVICE_WINDOW' wfeature-src/internal/platform/ktf/service_budget.go
+          grep -n 'case "cheat"' wfeature-src/internal/serve/serve.go
+          grep -n 'Cheat:.*CheatConsole' wfeature-src/cmd/cli/main.go
           cd wfeature-src
           make release
-          install -Dm755 build/release/wfeature ../out/wfeature-probe
-          sha256sum ../out/wfeature-probe | tee ../out/SHA256SUMS
+          install -Dm755 build/release/wfeature ../out/wfeature-cheatserve
+          sha256sum ../out/wfeature-cheatserve | tee ../out/SHA256SUMS
 
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wfeature-inotia2-probe
+          name: wfeature-inotia2-cheatserve
           path: out/
           if-no-files-found: error
           retention-days: 7
