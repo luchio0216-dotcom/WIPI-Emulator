@@ -32,7 +32,7 @@ jobs:
           go-version: '1.25.x'
           cache-dependency-path: wfeature-src/go.sum
 
-      - name: Add cheat-through-serve analysis command
+      - name: Build live-analysis binaries
         shell: bash
         run: |
           set -euxo pipefail
@@ -86,13 +86,15 @@ jobs:
           grep -n 'Cheat:.*CheatConsole' wfeature-src/cmd/cli/main.go
           cd wfeature-src
           make release
+          make server-release
           install -Dm755 build/release/wfeature ../out/wfeature-cheatserve
-          sha256sum ../out/wfeature-cheatserve | tee ../out/SHA256SUMS
+          install -Dm755 build/release/wfeature-server ../out/wfeature-server
+          sha256sum ../out/wfeature-cheatserve ../out/wfeature-server | tee ../out/SHA256SUMS
 
       - name: Upload CLI artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wfeature-inotia2-cheatserve
+          name: wfeature-inotia2-live-tools
           path: out/
           if-no-files-found: error
           retention-days: 7
